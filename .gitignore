@@ -1,0 +1,12 @@
+
+venv/
+__pycache__/
+*.pyc
+.env
+.aws/
+seen.json
+*.db
+.DS_Store
+EOF
+/awsaws/
+awscliv2.zip
