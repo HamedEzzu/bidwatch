@@ -1,4 +1,3 @@
-
 venv/
 __pycache__/
 *.pyc
@@ -7,6 +6,6 @@ __pycache__/
 seen.json
 *.db
 .DS_Store
-EOF
-/awsaws/
+aws/
 awscliv2.zip
+.pytest_cache/
