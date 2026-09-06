@@ -165,7 +165,10 @@ def test_send_uses_telegram_when_configured(monkeypatch):
     monkeypatch.setattr(notify.requests, "post", fake_post)
     assert notify.send("hi") == "Notification sent via Telegram."
     assert "token123" in captured["url"]
-    assert captured["payload"] == {"chat_id": "42", "text": "hi", "disable_web_page_preview": False}
+    assert captured["payload"]["chat_id"] == "42"
+    assert captured["payload"]["disable_web_page_preview"] is False
+    # Attribution is appended on the way out if the caller omitted it.
+    assert captured["payload"]["text"] == "hi\n\nSource: Remote OK"
 
 
 def test_send_falls_back_to_console_when_telegram_fails(monkeypatch, capsys):
@@ -222,3 +225,31 @@ def test_dedupe_accepts_id_references(tmp_path, postings):
     fresh = store.filter_new([fetch.hydrate({"id": p["id"]}) for p in postings], db)
     assert len(fresh) == 4
     assert fresh[0]["title"] == "Senior Python Backend Engineer"
+
+
+# --- prioritization (free, no model call) ----------------------------------
+
+def test_prioritize_puts_software_roles_first(postings):
+    from agent import prioritize
+
+    ordered = prioritize(postings)
+    assert ordered[0]["id"] in {"1000001", "1000003"}
+    assert {p["id"] for p in ordered} == {p["id"] for p in postings}
+
+
+# --- outbound message repair ----------------------------------------------
+
+def test_repair_fixes_a_retyped_link(postings):
+    fetch.remember(postings)
+    bad = "Link: https://remoteOK.com/remote-jobs/remote-senior-python-backend-engineer-orbital-data-1000001\n\nSource: Remote OK"
+    assert postings[0]["url"] in notify.repair_message(bad)
+
+
+def test_repair_appends_missing_attribution():
+    assert notify.repair_message("A job with no attribution").endswith("Source: Remote OK")
+
+
+def test_repair_leaves_a_correct_message_alone(postings):
+    fetch.remember(postings)
+    good = notify.format_notification(postings[0], 70, "Fits.", "Draft.")
+    assert notify.repair_message(good) == good

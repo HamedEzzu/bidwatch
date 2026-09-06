@@ -54,6 +54,10 @@ Operating limits for this run:
 - Each notification message must contain: job title, company, the direct
   Remote OK job link, the score, the rationale, the draft proposal, and the
   line "Source: Remote OK".
+- The feed mixes software roles with unrelated listings (retail, logistics,
+  hospitality). When choosing which postings to score, pick the ones whose
+  title and tags look like software development work — do not simply take the
+  first few.
 - To keep token cost down, after fetching refer to a posting by its id only:
   pass [{{"id": "..."}}, ...] to filter_new_postings, and {{"id": "..."}} to
   score_posting and draft_proposal. Never repeat a posting's description back
@@ -110,6 +114,35 @@ def load_fixture_postings(path: str = FIXTURE_PATH) -> list[dict[str, Any]]:
     return postings
 
 
+#: Skills worth spending the per-run scoring budget on, derived from the
+#: profile's "Strong skills" section. Used only to ORDER candidates, never to
+#: discard them, and it costs nothing — no model call is involved.
+PRIORITY_KEYWORDS = (
+    "python", "fastapi", "django", "sqlalchemy", "pytest", "c#", "csharp",
+    ".net", "dotnet", "asp.net", "entity framework", "postgres", "postgresql",
+    "sql server", "sql", "javascript", "typescript", "node", "express",
+    "react", "docker", "linux", "git", "websocket", "backend", "full stack",
+    "api", "developer", "engineer", "software",
+)
+
+
+def prioritize(postings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Order postings by keyword overlap with the profile's strong skills.
+
+    The feed is newest-first and mixes software roles with unrelated retail and
+    logistics listings, so scoring the newest N would often spend the whole
+    per-run model budget on jobs that could never fit. Nothing is discarded —
+    only reordered, so the cap is spent on the most plausible candidates first.
+    """
+    def relevance(posting: dict[str, Any]) -> int:
+        haystack = " ".join(
+            [posting.get("title", ""), " ".join(posting.get("tags", [])), posting.get("description", "")[:600]]
+        ).lower()
+        return sum(1 for keyword in PRIORITY_KEYWORDS if keyword in haystack)
+
+    return sorted(postings, key=relevance, reverse=True)
+
+
 def run_pipeline(tag: str = TAG, dry_run: bool = False) -> dict[str, int]:
     """Run one cycle deterministically, in Python rather than via the model loop.
 
@@ -128,7 +161,7 @@ def run_pipeline(tag: str = TAG, dry_run: bool = False) -> dict[str, int]:
         return stats
 
     profile = read_profile()
-    batch = fresh[:MAX_POSTINGS_PER_RUN]
+    batch = prioritize(fresh)[:MAX_POSTINGS_PER_RUN]
 
     for posting in batch:
         try:

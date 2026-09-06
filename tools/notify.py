@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any
 
 import requests
 from strands import tool
+
+from tools.fetch import hydrate
 
 logger = logging.getLogger(__name__)
 
@@ -42,12 +45,40 @@ def format_notification(posting: dict[str, Any], score: int, rationale: str, dra
     )
 
 
+_LINK_RE = re.compile(r"https?://(?:www\.)?remoteok\.com/\S+", re.I)
+
+
+def repair_message(message: str) -> str:
+    """Fix a message the model composed by hand before it goes out.
+
+    The model sometimes retypes the job URL (wrong capitalisation, a dropped
+    character) or forgets the attribution line. Both are obligations under the
+    Remote OK API terms, so links are rewritten from the fetched posting
+    whenever the trailing id matches, and the attribution is appended if absent.
+    """
+    def fix(match: re.Match[str]) -> str:
+        url = match.group(0).rstrip(").,")
+        trailing = url.rstrip("/").rsplit("-", 1)[-1]
+        posting = hydrate({"id": trailing})
+        canonical = posting.get("url")
+        if canonical and canonical.lower() != url.lower():
+            logger.info("Repaired job link for posting %s", trailing)
+        return canonical or url
+
+    repaired = _LINK_RE.sub(fix, message)
+    if ATTRIBUTION.lower() not in repaired.lower():
+        repaired = f"{repaired}\n\n{ATTRIBUTION}"
+        logger.info("Appended missing Remote OK attribution to notification.")
+    return repaired
+
+
 def telegram_configured() -> bool:
     return bool(os.getenv("TELEGRAM_BOT_TOKEN") and os.getenv("TELEGRAM_CHAT_ID"))
 
 
 def send(message: str) -> str:
     """Send one message via Telegram, or print it if Telegram is unconfigured."""
+    message = repair_message(message)
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
 

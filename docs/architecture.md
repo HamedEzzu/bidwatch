@@ -52,6 +52,7 @@ sequenceDiagram
     Ag->>DB: filter_new_postings(postings)
     DB-->>Ag: only unseen ids (and records them)
     Ag->>Ag: load_profile() — read profile.md fresh
+    Ag->>Ag: rank candidates by profile keyword overlap (free, no model call)
     loop at most MAX_POSTINGS_PER_RUN new postings
         Ag->>M: score_posting(posting, profile)
         M-->>Ag: {"score": 0-100, "rationale": "..."}
@@ -112,5 +113,7 @@ file changes.
 | Zero-model test path | `--dry-run` against `fixtures/sample_postings.json` | — |
 | Token accounting per run | `tools/llm.py` → logged by the scheduler | always on |
 | Poll floor (politeness to the source) | `scheduler.py` | 15 minutes |
+| Postings referred to by id, not re-serialized through the model | `tools/fetch.py` cache | always on |
+| Candidates ranked before the cap, so the budget goes to plausible jobs | `agent.prioritize` | always on |
 
 Data source: **Remote OK** (https://remoteok.com).

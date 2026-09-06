@@ -174,6 +174,59 @@ Tests:
 pytest -q
 ```
 
+### A real run
+
+`python scheduler.py --once` against the live feed, with no Telegram configured:
+
+```
+INFO bidwatch.scheduler: Cycle start — mode=agent tag=backend threshold=65 max_postings=5
+Tool #1: fetch_job_postings      INFO tools.fetch: Fetched 20 postings for tag='backend'
+Tool #2: load_profile
+Tool #3: filter_new_postings     INFO tools.store: 8 of 8 postings are new
+Tool #4-8: score_posting
+  Scored 'Software Engineer GO'                      -> 25
+  Scored 'Senior Software Engineer Case Execution'   -> 72
+  Scored 'Staff Software Development Engineer SDM'   -> 15
+  Scored 'Senior Backend Engineer Build AI Agents'   -> 35
+  Scored 'DESARROLLADOR FULL STACK'                  -> 55
+Tool #9: draft_proposal
+Tool #10: send_notification      INFO tools.notify: Telegram is not configured; printing to console.
+
+========================================================================
+Senior Software Engineer Case Execution — Pivotal Health
+
+Score: 72/100
+
+Rationale: Strong Python backend fit with data-heavy workflow work aligning well
+with the profile, but the senior title introduces friction worth a mild penalty.
+
+Remote OK Link: https://remoteOK.com/remote-jobs/remote-senior-software-engineer-
+case-execution-pivotal-health-1136795
+
+Draft Proposal:
+You need a Senior Software Engineer for your Case Execution team to handle
+eligibility, batching, and claim orchestration workflows. I'm a Computer
+Engineering student graduating 2027, so I don't meet the senior-level requirement
+you've specified. However, I have relevant backend experience: I've built async
+workflows with FastAPI and SQLAlchemy, worked with PostgreSQL on complex schema
+design and concurrency control, and implemented real-time systems using
+WebSockets. My rate is $15-25/hour, and I'm available part-time remote from
+UTC+2. Given the senior designation in your title, are you open to considering a
+junior contributor for any aspects of this work?
+
+Source: Remote OK
+========================================================================
+
+INFO bidwatch.scheduler: Agent summary: 8 new postings, 5 scored, 1 notification sent.
+INFO bidwatch.scheduler: Approx. token usage — calls=6 input=7227 output=412
+INFO bidwatch.scheduler: Cycle end — 52.2s elapsed
+```
+
+Note what the draft does *not* do: it states plainly that the freelancer does not meet
+the senior requirement, rather than claiming experience the profile doesn't contain.
+Running the same command again immediately afterwards reports `0 of 20 postings are
+new`, makes zero model calls, and sends nothing.
+
 ### Configuration
 
 All in [`config.py`](config.py), each overridable by an environment variable.
@@ -242,6 +295,28 @@ tool loop — that's the agentic behaviour the project is about. `--mode pipelin
 the same six tools deterministically from Python, which is what `--dry-run` uses and
 what you want when a run must be exactly predictable or maximally cheap. Both share
 the same tool implementations, so they cannot drift apart.
+
+**Spend the model budget on plausible jobs.** The feed is newest-first and mixes
+software roles with retail, hospitality and logistics listings that happen to carry a
+matching tag. Scoring the newest five would routinely burn the whole per-run budget on
+jobs that could never fit, so candidates are ordered by keyword overlap with the
+profile's strong skills before the cap applies. Nothing is discarded — only reordered
+— and the ranking is plain string matching, so it costs nothing.
+
+**Scoring is calibrated to the source, not to an ideal.** Every Remote OK listing is a
+permanent, salaried, full-time role, and the API does not expose contract type. An
+early version penalised "full-time" and "senior", which made BidWatch silent by
+construction — it rejected every posting the board actually carries. Those signals are
+now a mild penalty at most; the score is dominated by stack overlap, and deal-breakers
+(on-site, page-builder work, a language the freelancer doesn't speak) remain fatal.
+The freelancer decides whether a senior title is worth their bid; BidWatch judges the
+work.
+
+**The outbound message is repaired, not trusted.** When the model composes a
+notification itself it occasionally retypes the job URL or drops the attribution line.
+Both are obligations under the Remote OK API terms, so `send_notification` rewrites any
+Remote OK link from the posting BidWatch actually fetched and appends the attribution if
+it is missing, before anything is sent.
 
 **Conservative scoring by default.** A missed marginal job costs a freelancer far
 less than a wasted bid or, worse, a proposal claiming experience they don't have. So
