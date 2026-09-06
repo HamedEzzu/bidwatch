@@ -109,7 +109,7 @@ bidwatch/
 ## Setup from a clean clone
 
 ```bash
-git clone https://github.com/TODO-github-username/bidwatch.git   # TODO: set your GitHub username
+git clone https://github.com/HamedEzzu/bidwatch.git
 cd bidwatch
 
 python3.12 -m venv venv
