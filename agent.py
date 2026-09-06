@@ -17,13 +17,20 @@ from config import (
     SCORE_THRESHOLD,
     TAG,
 )
-from tools.drafting import draft, draft_proposal
 from tools.fetch import fetch_job_postings, normalize_posting, remember
 from tools.llm import usage_snapshot
-from tools.notify import format_notification, send, send_notification
+from tools.notify import (
+    flush_notifications,
+    format_job_message,
+    notify_job,
+    send,
+    send_notification,
+    send_run_summary,
+    telegram_configured,
+)
 from tools.profile import load_profile, read_profile
 from tools.scoring import score, score_posting
-from tools.store import filter_new, filter_new_postings
+from tools.store import STATUS_NOTIFIED, filter_new, filter_new_postings, set_status
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +42,8 @@ Each run:
 2. Keep only postings not seen before.
 3. Load the freelancer's profile.
 4. Score each new posting 0-100 for fit, with one line of reasoning.
-5. For any posting scoring above the threshold, draft a short proposal
-   (under 150 words) in the freelancer's voice.
-6. Send exactly one notification per qualifying posting.
+5. Send exactly one notification per qualifying posting, highest score first.
+6. Send the closing summary once, after the notifications.
 
 Hard rules:
 - NEVER claim skills or experience not present in the profile.
@@ -49,7 +55,8 @@ Hard rules:
   link in every notification.
 
 Operating limits for this run:
-- The score threshold is {SCORE_THRESHOLD}. Notify only for scores strictly above it.
+- The score threshold is {SCORE_THRESHOLD}. Notify for every posting scoring at
+  or above it — not just the best one — highest score first.
 - Score at most {MAX_POSTINGS_PER_RUN} postings. Stop after that, even if more are new.
 - Each notification message must contain: job title, company, the direct
   Remote OK job link, the score, the rationale, the draft proposal, and the
@@ -60,8 +67,7 @@ Operating limits for this run:
   first few.
 - To keep token cost down, after fetching refer to a posting by its id only:
   pass [{{"id": "..."}}, ...] to filter_new_postings, and {{"id": "..."}} to
-  score_posting and draft_proposal. Never repeat a posting's description back
-  into a tool call. The tools look the full posting up for you.
+  score_posting. Never repeat a posting's description back into a tool call. The tools look the full posting up for you.
 - When you are done, reply with one short line: how many postings were new,
   how many were scored, and how many notifications you sent."""
 
@@ -70,8 +76,8 @@ TOOLS = [
     filter_new_postings,
     load_profile,
     score_posting,
-    draft_proposal,
     send_notification,
+    send_run_summary,
 ]
 
 
@@ -90,14 +96,23 @@ def run_agent_loop(tag: str = TAG) -> str:
     prompt = (
         f"Run one BidWatch cycle now. Fetch postings with tag '{tag}' "
         f"(limit {MAX_POSTINGS_PER_RUN * 4}), drop the ones already seen, load the "
-        f"profile, then score at most {MAX_POSTINGS_PER_RUN} of the new postings and "
-        "notify me about the ones that qualify."
+        f"profile, then score up to {MAX_POSTINGS_PER_RUN} of the new postings and "
+        "notify me about every one that qualifies, highest score first, then send "
+        "the closing summary."
     )
     try:
-        return str(agent(prompt)).strip()
+        summary = str(agent(prompt)).strip()
     except Exception as exc:  # noqa: BLE001 - one bad run must not kill the scheduler
         logger.error("Agent loop failed: %s", exc)
-        return f"Agent loop failed: {exc}"
+        summary = f"Agent loop failed: {exc}"
+    finally:
+        # Safety net: deliver anything the model queued but never flushed, so a
+        # run that ends early still notifies about the jobs it found.
+        stranded = flush_notifications()
+        if stranded:
+            logger.warning("Flushed %d notification(s) the model left queued.", stranded)
+            send(f"Scanned this run — {stranded} above threshold.", repair=False)
+    return summary
 
 
 def load_fixture_postings(path: str = FIXTURE_PATH) -> list[dict[str, Any]]:
@@ -126,6 +141,14 @@ PRIORITY_KEYWORDS = (
 )
 
 
+def _relevance(posting: dict[str, Any]) -> int:
+    """How many profile keywords a posting mentions. Free — no model call."""
+    haystack = " ".join(
+        [posting.get("title", ""), " ".join(posting.get("tags", [])), posting.get("description", "")[:600]]
+    ).lower()
+    return sum(1 for keyword in PRIORITY_KEYWORDS if keyword in haystack)
+
+
 def prioritize(postings: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Order postings by keyword overlap with the profile's strong skills.
 
@@ -134,20 +157,17 @@ def prioritize(postings: list[dict[str, Any]]) -> list[dict[str, Any]]:
     per-run model budget on jobs that could never fit. Nothing is discarded —
     only reordered, so the cap is spent on the most plausible candidates first.
     """
-    def relevance(posting: dict[str, Any]) -> int:
-        haystack = " ".join(
-            [posting.get("title", ""), " ".join(posting.get("tags", [])), posting.get("description", "")[:600]]
-        ).lower()
-        return sum(1 for keyword in PRIORITY_KEYWORDS if keyword in haystack)
-
-    return sorted(postings, key=relevance, reverse=True)
+    return sorted(postings, key=_relevance, reverse=True)
 
 
-def run_pipeline(tag: str = TAG, dry_run: bool = False) -> dict[str, int]:
+def run_pipeline(tag: str = TAG, dry_run: bool = False, interactive: bool = False) -> dict[str, int]:
     """Run one cycle deterministically, in Python rather than via the model loop.
 
-    Used by --dry-run (no model calls at all) and available as --mode pipeline
-    for a cheaper, fully predictable run. Returns per-run counters.
+    Scores every new posting up to MAX_POSTINGS_PER_RUN, notifies about every
+    one that scores at or above the threshold (highest first), and closes with
+    a one-line summary. If nothing qualifies, nothing is sent at all.
+
+    Used by --dry-run (no model calls) and available as --mode pipeline.
     """
     stats = {"fetched": 0, "new": 0, "scored": 0, "notified": 0}
 
@@ -162,29 +182,50 @@ def run_pipeline(tag: str = TAG, dry_run: bool = False) -> dict[str, int]:
 
     profile = read_profile()
     batch = prioritize(fresh)[:MAX_POSTINGS_PER_RUN]
+    qualifying: list[tuple[int, str, dict[str, Any]]] = []
 
     for posting in batch:
         try:
             if dry_run:
-                # No model calls: a transparent, deterministic stand-in so the
-                # non-LLM path can be exercised for free.
+                # No model calls. The stand-in score is derived from the free
+                # keyword ranking purely so the ordering and threshold logic
+                # are visible offline; it is not a judgement about the job.
                 result = {
-                    "score": SCORE_THRESHOLD + 15,
+                    "score": min(99, SCORE_THRESHOLD + 5 + 3 * _relevance(posting)),
                     "rationale": "[dry-run] Scoring skipped; no model call was made.",
                 }
-                proposal = "[dry-run] Proposal drafting skipped; no model call was made."
             else:
                 result = score(posting, profile)
-                if result["score"] <= SCORE_THRESHOLD:
-                    stats["scored"] += 1
-                    logger.info("Skipping %r (score %d)", posting["title"], result["score"])
-                    continue
-                proposal = draft(posting, profile)
             stats["scored"] += 1
-            send(format_notification(posting, result["score"], result["rationale"], proposal))
-            stats["notified"] += 1
+            if result["score"] >= SCORE_THRESHOLD:
+                qualifying.append((result["score"], result["rationale"], posting))
+            else:
+                logger.info("Skipping %r (score %d)", posting["title"], result["score"])
         except Exception as exc:  # noqa: BLE001 - one bad posting must not kill the run
             logger.error("Posting %s failed: %s", posting.get("id"), exc)
+
+    # Highest score first, so the best job is the first thing read.
+    qualifying.sort(key=lambda item: item[0], reverse=True)
+
+    for score_value, rationale, posting in qualifying:
+        try:
+            notify_job(posting, score_value, rationale, console_only=dry_run)
+            set_status(posting["id"], STATUS_NOTIFIED, score=score_value)
+            stats["notified"] += 1
+            if interactive and not telegram_configured():
+                import console
+
+                console.handle_job(posting)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Could not notify about posting %s: %s", posting.get("id"), exc)
+
+    # Nothing qualified means nothing is sent — no summary, no "no jobs" message.
+    if stats["notified"]:
+        send(
+            f"Scanned {stats['new']} new postings — {stats['notified']} above threshold.",
+            repair=False,
+            console_only=dry_run,
+        )
 
     return stats
 

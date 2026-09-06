@@ -9,3 +9,7 @@ seen.json
 aws/
 awscliv2.zip
 .pytest_cache/
+
+# Personal application data and documents
+applicant.md
+*.pdf

@@ -20,20 +20,91 @@ flowchart TD
     L -->|2| D[filter_new_postings]
     L -->|3| P[load_profile]
     L -->|4| SC[score_posting]
-    L -->|5| DR[draft_proposal]
-    L -->|6| N[send_notification]
+    L -->|5| N[send_notification]
+    L -->|6| SM[send_run_summary]
 
     F <--> ROK[(Remote OK public JSON API)]
     D <--> DB[(bidwatch.db · seen posting ids)]
     P <--> PM[/profile.md/]
     SC <--> M1{{Bedrock model}}
-    DR <--> M1
-    N --> TG[Telegram Bot API]
+    N --> Q[[queue, flushed highest score first]]
+    SM --> Q
+    Q --> TG[Telegram Bot API]
     N --> CO[Console fallback]
 
-    TG --> H([Human: bid or skip])
+    Q --> CO[Console fallback]
+    TG --> H([Human: Bid · Open · Skip])
     CO --> H
 ```
+
+## The bid flow
+
+Scanning and applying are deliberately separate. The scanning agent has no tool that
+can reach an employer; submission lives in its own path, entered only by a button tap
+and completed only by an explicit confirmation.
+
+```mermaid
+flowchart TD
+    T[Bid tapped] --> R[gather_requirements: read the listing page]
+    R --> C{Application method}
+    C -->|email found| E[method = email]
+    C -->|Greenhouse / Lever / Ashby / Workable| A[method = known_ats]
+    C -->|anything else| M[method = manual]
+
+    E --> F[Fill from applicant.md + generate cover letter]
+    A --> F
+    M --> F
+    F --> QQ[Unanswerable screening questions marked NEEDS YOUR INPUT]
+    QQ --> D[Show the complete draft]
+
+    D --> B{User decides}
+    B -->|Edit letter| ED[Revise from plain-language instruction] --> D
+    B -->|Cancel| X([Nothing sent])
+    B -->|Confirm & Submit| S{Submit by method}
+
+    S -->|email| SM[SMTP: letter as body, résumé attached] --> OK1([applied_email])
+    S -->|known_ats| AT[POST to the provider endpoint]
+    AT -->|success| OK2([applied_ats])
+    AT -->|token missing or schema mismatch| MH
+    S -->|manual| MH[Hand back apply URL, letter and fields] --> OK3([applied_manual])
+
+    style X fill:#fee,stroke:#c00
+```
+
+Nothing crosses from the left of that diagram to a submission without passing through
+`Confirm & Submit`. There is no timeout that auto-confirms.
+
+## Posting lifecycle
+
+Every posting has exactly one status in the store, and only `new` may be notified
+about, so nothing already handled can resurface:
+
+```mermaid
+stateDiagram-v2
+    [*] --> new: fetched and unseen
+    new --> notified: passed the threshold
+    notified --> bidding: Bid tapped
+    notified --> skipped: Skip tapped
+    bidding --> applied_email: SMTP accepted it
+    bidding --> applied_ats: the ATS accepted it
+    bidding --> applied_manual: handed back for manual submission
+    bidding --> notified: Cancel
+    applied_email --> [*]
+    applied_ats --> [*]
+    applied_manual --> [*]
+    skipped --> [*]
+```
+
+## Two processes
+
+```
+python scheduler.py     finds jobs, scores them, sends notifications
+python bot.py           listens for button taps and the edit-letter replies
+```
+
+The scheduler can run alone — you will get alerts, but the buttons will not respond
+until `bot.py` is listening. With no Telegram credentials, `scheduler.py --once
+--interactive` runs the identical flow as terminal prompts.
 
 ## Run sequence
 
@@ -56,15 +127,15 @@ sequenceDiagram
     loop at most MAX_POSTINGS_PER_RUN new postings
         Ag->>M: score_posting(posting, profile)
         M-->>Ag: {"score": 0-100, "rationale": "..."}
-        alt score > SCORE_THRESHOLD
-            Ag->>M: draft_proposal(posting, profile)
-            M-->>Ag: draft under 150 words
-            Ag->>U: send_notification(summary + score + rationale + draft + Remote OK link)
-        else score <= threshold
-            Ag->>Ag: skip quietly, no notification
+        alt score >= SCORE_THRESHOLD
+            Ag->>Ag: queue a notification for this posting
+        else below threshold
+            Ag->>Ag: skip quietly
         end
     end
-    Note over Ag,U: If nothing qualifies, nothing is sent.<br/>BidWatch drafts; the human sends.
+    Ag->>U: flush queued notifications, highest score first
+    Ag->>U: one closing summary line
+    Note over Ag,U: If nothing qualifies, nothing is sent at all.<br/>BidWatch prepares; the human confirms.
 ```
 
 ## Components
@@ -113,6 +184,7 @@ file changes.
 | Zero-model test path | `--dry-run` against `fixtures/sample_postings.json` | — |
 | Token accounting per run | `tools/llm.py` → logged by the scheduler | always on |
 | Poll floor (politeness to the source) | `scheduler.py` | 15 minutes |
+| Submissions per rolling hour | `MAX_SUBMISSIONS_PER_HOUR` | 5 |
 | Postings referred to by id, not re-serialized through the model | `tools/fetch.py` cache | always on |
 | Candidates ranked before the cap, so the budget goes to plausible jobs | `agent.prioritize` | always on |
 

@@ -20,12 +20,19 @@ USER_AGENT = "BidWatch/1.0 (freelance job scout; +https://github.com/HamedEzzu/b
 
 # --- Behaviour -------------------------------------------------------------
 SCORE_THRESHOLD = int(os.getenv("SCORE_THRESHOLD", "65"))
-MAX_POSTINGS_PER_RUN = int(os.getenv("MAX_POSTINGS_PER_RUN", "5"))
+MAX_POSTINGS_PER_RUN = int(os.getenv("MAX_POSTINGS_PER_RUN", "15"))
 RUN_INTERVAL_MINUTES = int(os.getenv("RUN_INTERVAL_MINUTES", "30"))
+
+# --- Applying -------------------------------------------------------------
+# No application is ever submitted without an explicit confirmation; this is a
+# ceiling on how many confirmed submissions may go out in a rolling hour.
+MAX_SUBMISSIONS_PER_HOUR = int(os.getenv("MAX_SUBMISSIONS_PER_HOUR", "5"))
+COVER_LETTER_MAX_WORDS = int(os.getenv("COVER_LETTER_MAX_WORDS", "220"))
 
 # --- Paths -----------------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROFILE_PATH = os.path.join(BASE_DIR, "profile.md")
+APPLICANT_PATH = os.path.join(BASE_DIR, "applicant.md")
 DB_PATH = os.path.join(BASE_DIR, "bidwatch.db")
 FIXTURE_PATH = os.path.join(BASE_DIR, "fixtures", "sample_postings.json")
 

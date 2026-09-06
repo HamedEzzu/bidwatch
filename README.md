@@ -27,15 +27,71 @@ On every run:
 2. **Discards** anything it has already seen on a previous run.
 3. **Loads** your profile — skills, rates, deal-breakers, and the voice you write in.
 4. **Scores** each new posting 0–100 for fit, with a one-line rationale.
-5. **Drafts** a proposal (under 150 words, in your voice) for anything above the threshold.
-6. **Notifies** you exactly once per qualifying posting, with the summary, score,
-   rationale, draft, and a direct link to the listing.
+5. **Notifies** you once per qualifying posting — highest score first — with a short,
+   scannable card and **Bid / Open / Skip** buttons, then one closing summary line.
+6. **Prepares the application** when you tap Bid: it reads the listing page, works out
+   how to apply, fills in your details, writes a tailored cover letter, and shows you
+   the whole thing for review.
+7. **Submits only when you tap Confirm.**
 
-If nothing qualifies, it sends nothing and ends the run quietly.
+If nothing qualifies, it sends nothing at all — no summary, no "no jobs found".
 
-> **Product principle, enforced in both code and prompt: BidWatch drafts, the human
-> sends.** The agent has no tool that can contact a client. Its only outbound channel
-> is a notification to you.
+> **Product principle, enforced in code, not just in the prompt: nothing is ever sent
+> without your explicit confirmation.** The scanning agent has no tool that can contact
+> an employer — its only outbound channel is a notification to you. Submission lives in
+> a separate path that runs only after a `Confirm & Submit` tap. There is no timeout
+> that auto-confirms and no implicit approval.
+
+### The notification
+
+```
+[85/100] Senior Python Developer
+Acme Corp — Remote (US timezones)
+About: B2B SaaS company building logistics software.
+Salary: $90k–$120k
+Why it fits: Strong FastAPI + PostgreSQL match; budget above target rate.
+
+Source: Remote OK
+[ ✅ Bid ]  [ 🔗 Open ]  [ ⏭ Skip ]
+```
+
+Score first, so a glance is enough. **About** is *extracted* from the posting text,
+never generated — if the description yields nothing useful the line is dropped rather
+than invented. **Salary** disappears entirely when the listing doesn't publish one
+(most don't); you will never see "N/A". The full description and the cover letter stay
+out of the alert — they belong in the bid flow, not the notification.
+
+### The bid flow
+
+Tapping **Bid** runs four steps, and stops before the fifth until you confirm:
+
+1. **Gather** — fetches the listing page and classifies how to apply: an
+   **email** address found in the posting, a **known ATS** (Greenhouse, Lever, Ashby,
+   Workable), or **manual** for custom forms and login-gated pages. It also collects
+   the fields and any screening questions the page asks.
+2. **Fill** — populates everything from `applicant.md` and writes a cover letter
+   tailored to that posting, in the voice from `profile.md`. A screening question that
+   `applicant.md` can't answer is marked `⚠️ NEEDS YOUR INPUT` rather than guessed at.
+3. **Review** — the complete filled application comes back in chat, with
+   **Confirm & Submit** · **Edit letter** · **Cancel**.
+4. **Edit** — reply in plain language ("make it shorter", "less formal", "mention the
+   WebSockets project") and the letter is rewritten and re-shown. Loop as long as you
+   like. Each job's draft is kept separately, so two bids in progress never collide.
+5. **Submit** — only on `Confirm & Submit`:
+
+| Path | What happens |
+|---|---|
+| `email` | Sent over SMTP: letter as the body, résumé attached, subject naming the role. |
+| `known_ats` | Attempts the provider's application endpoint. Most boards require a per-employer token this project doesn't hold — when that happens it falls back to the manual path **and says so**. |
+| `manual` | Hands you the apply URL, the finished letter in a copy-friendly block, and every field ready to paste. |
+
+**Be clear about the limits: fully automated submission covers email and supported ATS
+providers only.** Everything else is a manual handoff with the letter already written.
+BidWatch reports the path it actually took every time — it never claims a submission
+that didn't happen.
+
+Submissions are capped at `MAX_SUBMISSIONS_PER_HOUR` (default 5), and every attempt is
+logged with its outcome.
 
 ---
 
@@ -80,8 +136,8 @@ sequence — are in [docs/architecture.md](docs/architecture.md).
 | `filter_new_postings` | `(postings: list[dict]) -> list[dict]` | Returns only postings whose ids aren't in the local SQLite store, then records them. Run twice, and the second run returns nothing. |
 | `load_profile` | `() -> str` | Reads `profile.md` fresh on every call, so you can edit it without restarting. Returns a clear error string if it's missing. |
 | `score_posting` | `(posting_json: str, profile: str) -> str` | Model reasoning: returns `{"score": 0-100, "rationale": "..."}`. Deal-breaker matches are forced below 20. Malformed model output is parsed defensively and defaults low. |
-| `draft_proposal` | `(posting_json: str, profile: str) -> str` | Model reasoning: a proposal under 150 words that opens on the client's actual problem and never claims a skill absent from the profile. |
-| `send_notification` | `(message: str) -> str` | Sends one Telegram message; prints to the console when Telegram isn't configured. |
+| `send_notification` | `(posting_id: str, score: int, rationale: str) -> str` | Notifies about one job. The model passes only the id, score and rationale — BidWatch builds the message and attaches the buttons, so the format is guaranteed whatever the model writes. |
+| `send_run_summary` | `(new_count: int, notified_count: int) -> str` | The single closing line, sent only when something qualified. |
 
 ### Project layout
 
@@ -91,16 +147,24 @@ bidwatch/
 ├── scheduler.py                # --once / --dry-run / interval loop
 ├── config.py                   # model, region, source, thresholds, limits
 ├── profile.md                  # your skills, rates, deal-breakers, voice
+├── bot.py                      # Telegram listener: button taps + edit loop
+├── bidflow.py                  # the bid flow, shared by Telegram and console
+├── console.py                  # terminal fallback for the same flow
+├── profile.md                  # skills, rates, deal-breakers, voice  (in git)
+├── applicant.md                # your identity and standard answers   (gitignored)
 ├── tools/
 │   ├── fetch.py                # Remote OK adapter (all source-specific code)
-│   ├── store.py                # SQLite dedupe store
+│   ├── store.py                # SQLite store: dedupe + posting lifecycle
 │   ├── profile.py              # profile loading
+│   ├── applicant.py            # applicant.md parsing, screening answers
 │   ├── scoring.py              # fit scoring + defensive parsing
-│   ├── drafting.py             # proposal drafting
-│   ├── notify.py               # Telegram + console fallback
+│   ├── apply.py                # how to apply: email / known ATS / manual
+│   ├── letter.py               # cover letter generation and revision
+│   ├── submit.py               # SMTP, ATS attempt, manual handoff
+│   ├── notify.py               # message format, buttons, Telegram transport
 │   └── llm.py                  # shared Bedrock client + token accounting
 ├── fixtures/sample_postings.json   # for --dry-run
-├── tests/test_tools.py         # 22 tests, no network, no model calls
+├── tests/                      # 57 tests, no network, no model calls, no mail
 └── docs/architecture.md
 ```
 
@@ -139,6 +203,18 @@ cp .env.example .env
    `https://api.telegram.org/bot<TOKEN>/getUpdates` and copy `message.chat.id`
    into `TELEGRAM_CHAT_ID`.
 
+**Two files describe you, and the split matters.**
+
+| File | Answers | In git? |
+|---|---|---|
+| `profile.md` | *Is this job worth bidding on?* — skills, rates, deal-breakers, the voice you write in | yes |
+| `applicant.md` | *What goes in the form?* — name, email, phone, links, résumé path, your standard answers | no, gitignored |
+
+Copy `applicant.example.md` to `applicant.md` and fill it in before your first bid.
+Both files are read fresh on every run, so edits take effect immediately with no
+restart. A value left as `TODO` in `applicant.md` is reported as `⚠️ NEEDS YOUR INPUT`
+in the draft rather than quietly omitted or invented.
+
 **Your profile.** Edit [`profile.md`](profile.md) — strong skills, things you're
 willing but not expert in, what you won't bid on, your rates, and your proposal
 voice. This file is the whole basis for scoring and drafting, so it's worth ten
@@ -148,12 +224,26 @@ careful minutes. It's read fresh on every run; no restart needed.
 
 ## Running it
 
+BidWatch is two processes: one finds jobs, the other listens for your button taps.
+
 ```bash
-# Free: full pipeline against bundled fixtures, zero model calls.
+python scheduler.py      # terminal 1 — scans and notifies, every 30 minutes
+python bot.py            # terminal 2 — handles Bid / Open / Skip and the edit loop
+```
+
+The scheduler runs fine alone, but the buttons stay unresponsive until `bot.py` is
+listening. Everything else:
+
+```bash
+# Free: full pipeline against bundled fixtures, zero model calls, nothing sent
+# to Telegram — the dry run never posts to your real chat.
 python scheduler.py --dry-run
 
-# One real cycle: live feed, real scoring and drafting.
+# One real cycle: live feed, real scoring.
 python scheduler.py --once
+
+# No Telegram? Same flow, terminal prompts: [b]id / [s]kip / [o]pen.
+python scheduler.py --once --interactive
 
 # One real cycle, deterministic Python orchestration instead of the model loop.
 python scheduler.py --once --mode pipeline
@@ -166,7 +256,8 @@ python scheduler.py
 ```
 
 Run `--once` twice in a row and the second run notifies about nothing: every posting
-was already recorded in `bidwatch.db`.
+was already recorded in `bidwatch.db`, and only postings with status `new` are ever
+notified about.
 
 Tests:
 
@@ -238,7 +329,8 @@ All in [`config.py`](config.py), each overridable by an environment variable.
 | `JOB_SOURCE_URL` | `JOB_SOURCE_URL` | `https://remoteok.com/api` | Job feed endpoint. |
 | `TAG` | `BIDWATCH_TAG` | `backend` | Remote OK tag to monitor. |
 | `SCORE_THRESHOLD` | `SCORE_THRESHOLD` | `65` | Notify only above this score. |
-| `MAX_POSTINGS_PER_RUN` | `MAX_POSTINGS_PER_RUN` | `5` | Hard cap on postings scored per run. |
+| `MAX_POSTINGS_PER_RUN` | `MAX_POSTINGS_PER_RUN` | `15` | Hard cap on postings scored per run. |
+| `MAX_SUBMISSIONS_PER_HOUR` | `MAX_SUBMISSIONS_PER_HOUR` | `5` | Ceiling on confirmed applications per rolling hour. |
 | `RUN_INTERVAL_MINUTES` | `RUN_INTERVAL_MINUTES` | `30` | Scheduled interval (floored at 15). |
 | `MAX_DESCRIPTION_CHARS` | — | `2000` | Truncation before the model sees a description. |
 
@@ -265,6 +357,25 @@ descriptive `User-Agent`.
 ---
 
 ## Design decisions
+
+**Confirmation is structural, not a promise.** The scanning agent's tool set contains
+nothing that can reach an employer — the worst a misbehaving model can do is notify you
+about a bad job. Submission lives in a separate module reachable only through a button
+tap and a second explicit `Confirm & Submit`. No timeout auto-confirms, and re-tapping
+Bid on a job you already applied to is refused rather than reopened.
+
+**Notification ordering is enforced in code, not asked of the model.** The model issues
+its `send_notification` calls in one parallel batch, so their arrival order is not
+something it can control — the first live test delivered a 72 before an 82. Notifications
+are therefore queued and flushed highest-score-first by BidWatch itself, with a safety
+flush if the run ends before the model asks for it.
+
+**Screening-question detection is deliberately narrow.** Job descriptions are full of
+rhetorical questions ("Are you a talented developer looking for your next challenge?"),
+and scraped pages carry embedded JSON. An early version pulled both into applications.
+Only phrasings that real forms use are collected now: a missed question shows up as a
+blank you fill in, while a false positive puts marketing copy and a mismatched answer
+into something you send to an employer.
 
 **Draft, never send.** The agent has no tool capable of reaching a client — the only
 outbound tool is `send_notification`, which talks to you. This is a structural
@@ -336,6 +447,19 @@ usage is logged after every run.
 
 ---
 
+## Honest limits
+
+- **Automated submission covers email and supported ATS providers only.** Greenhouse
+  and Lever both need a per-employer token this project does not hold, so in practice
+  most ATS jobs take the manual path — with the letter already written and every field
+  ready to paste. BidWatch tells you which path it actually took, every time.
+- **The feed is ~24 hours behind the Remote OK website.** A daily scout, not a race.
+- **The "About" line and screening questions are extracted, not generated.** When a
+  page yields nothing useful, you get a shorter message rather than a plausible
+  invention.
+- **The listener is long-polling, not a webhook.** Simple to run anywhere, but it must
+  be running for buttons to respond.
+
 ## Future work
 
 - **More sources.** Upwork and Freelancer RSS/API adapters behind the existing
@@ -351,6 +475,10 @@ usage is logged after every run.
 - **Richer filters.** Hourly-rate parsing from free-text descriptions, timezone
   overlap scoring, and per-tag thresholds.
 - **A web dashboard** for reviewing the queue when Telegram isn't the right surface.
+- **More ATS coverage**, including authenticated Greenhouse/Lever submissions where the
+  employer's board key is available.
+- **Résumé tailoring** per posting, not just the cover letter.
+- **Outcome tracking**: which letters got replies, feeding back into scoring.
 
 ---
 

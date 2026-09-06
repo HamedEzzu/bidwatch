@@ -122,21 +122,50 @@ def test_empty_profile_returns_error_string(tmp_path):
 
 # --- notification ----------------------------------------------------------
 
-def test_notification_contains_every_required_element(postings):
+def test_job_message_has_the_required_shape(postings):
     posting = postings[0]
-    message = notify.format_notification(posting, 82, "Strong FastAPI and Postgres overlap.", "Draft body here.")
-    assert posting["title"] in message
-    assert posting["company"] in message
-    assert posting["url"] in message
-    assert "82" in message
-    assert "Strong FastAPI and Postgres overlap." in message
-    assert "Draft body here." in message
-    assert "Source: Remote OK" in message
+    message = notify.format_job_message(posting, 85, "Strong FastAPI and Postgres overlap.")
+    lines = message.splitlines()
+    assert lines[0] == "[85/100] Senior Python Backend Engineer"
+    assert lines[1].startswith("Orbital Data — ")
+    assert any(line.startswith("About: ") for line in lines)
+    assert "Salary: $40k–$70k" in message
+    assert "Why it fits: Strong FastAPI and Postgres overlap." in message
+    assert message.rstrip().endswith("Source: Remote OK")
+    # The full description and the proposal draft stay out of the alert.
+    assert "isSelectedEnd" not in message and len(message) < 700
 
 
-def test_notification_reports_missing_salary_gracefully(postings):
+def test_job_message_omits_salary_line_when_absent(postings):
     wordpress = next(p for p in postings if p["id"] == "1000002")
-    assert "Salary: not published" in notify.format_notification(wordpress, 10, "Deal-breaker.", "n/a")
+    message = notify.format_job_message(wordpress, 12, "Deal-breaker.")
+    assert "Salary" not in message
+    assert "N/A" not in message and "Not specified" not in message
+
+
+def test_about_line_is_extracted_never_invented():
+    assert notify.summarize_company({"description": ""}) is None
+    assert notify.summarize_company({"description": "Too short."}) is None
+    about = notify.summarize_company(
+        {"description": "About the role. Acme is a B2B SaaS company building logistics software."}
+    )
+    assert about == "Acme is a B2B SaaS company building logistics software."
+
+
+def test_salary_formatting():
+    assert notify.format_salary({"salary_min": 90000, "salary_max": 120000}) == "$90k–$120k"
+    assert notify.format_salary({"salary_min": None, "salary_max": 70000}) == "$70k"
+    assert notify.format_salary({"salary_min": None, "salary_max": None}) is None
+
+
+def test_job_buttons_are_bid_open_skip(postings):
+    buttons = notify.job_buttons(postings[0])
+    row = buttons["inline_keyboard"][0]
+    assert [b["text"] for b in row] == ["✅ Bid", "🔗 Open", "⏭ Skip"]
+    assert row[0]["callback_data"] == "bid:1000001"
+    assert row[2]["callback_data"] == "skip:1000001"
+    # Open is a direct link to the listing, as the Remote OK terms require.
+    assert row[1]["url"] == postings[0]["url"]
 
 
 def test_send_falls_back_to_console_without_telegram(monkeypatch, capsys):
@@ -157,6 +186,10 @@ def test_send_uses_telegram_when_configured(monkeypatch):
         status_code = 200
         text = "ok"
 
+        @staticmethod
+        def json():
+            return {"ok": True, "result": {"message_id": 1}}
+
     def fake_post(url, json=None, timeout=None):
         captured["url"] = url
         captured["payload"] = json
@@ -166,7 +199,7 @@ def test_send_uses_telegram_when_configured(monkeypatch):
     assert notify.send("hi") == "Notification sent via Telegram."
     assert "token123" in captured["url"]
     assert captured["payload"]["chat_id"] == "42"
-    assert captured["payload"]["disable_web_page_preview"] is False
+    assert captured["payload"]["disable_web_page_preview"] is True
     # Attribution is appended on the way out if the caller omitted it.
     assert captured["payload"]["text"] == "hi\n\nSource: Remote OK"
 
@@ -251,5 +284,226 @@ def test_repair_appends_missing_attribution():
 
 def test_repair_leaves_a_correct_message_alone(postings):
     fetch.remember(postings)
-    good = notify.format_notification(postings[0], 70, "Fits.", "Draft.")
+    good = notify.format_job_message(postings[0], 70, "Fits.")
     assert notify.repair_message(good) == good
+
+
+# --- applicant details -----------------------------------------------------
+
+APPLICANT_SAMPLE = """# Applicant Details
+
+## Identity
+- Full name: Test Person
+- Email: test@example.com
+- Phone: +1 555 0100
+- Location: Testville
+- Timezone: UTC+2
+
+## Links
+- LinkedIn: https://linkedin.com/in/test
+- GitHub: TODO — add GitHub profile URL
+
+## Standard answers
+- Work authorization: Contractor, remote only
+- Salary expectation: $20/hour
+- Years of experience: Student with production projects;
+  no formal employment history
+"""
+
+
+def test_applicant_parses_fields_answers_and_todos():
+    from tools.applicant import parse_applicant
+
+    parsed = parse_applicant(APPLICANT_SAMPLE)
+    assert parsed["fields"]["name"] == "Test Person"
+    assert parsed["fields"]["email"] == "test@example.com"
+    assert parsed["fields"]["linkedin"] == "https://linkedin.com/in/test"
+    # A TODO value is reported as outstanding, never passed off as an answer.
+    assert "github" in parsed["todo"]
+    assert "github" not in parsed["fields"]
+
+
+def test_applicant_joins_wrapped_values():
+    from tools.applicant import parse_applicant
+
+    parsed = parse_applicant(APPLICANT_SAMPLE)
+    assert parsed["answers"]["years of experience"].endswith("no formal employment history")
+
+
+def test_unanswerable_question_is_flagged_not_invented():
+    from tools.applicant import NEEDS_INPUT, answer_question, parse_applicant
+
+    parsed = parse_applicant(APPLICANT_SAMPLE)
+    assert answer_question("Are you authorized to work remotely?", parsed) == "Contractor, remote only"
+    assert answer_question("What is your favourite colour?", parsed) == NEEDS_INPUT
+
+
+def test_missing_applicant_file_returns_error_string(tmp_path):
+    from tools.applicant import MISSING_APPLICANT_MESSAGE, read_applicant
+
+    assert read_applicant(str(tmp_path / "nope.md")) == MISSING_APPLICANT_MESSAGE
+
+
+# --- application method detection ------------------------------------------
+
+def test_detects_known_ats_providers():
+    from tools.apply import detect_ats
+
+    assert detect_ats("apply: https://boards.greenhouse.io/acme/jobs/12345")["provider"] == "greenhouse"
+    assert detect_ats("https://jobs.lever.co/acme/abc-def")["provider"] == "lever"
+    assert detect_ats("https://jobs.ashbyhq.com/acme/xyz-1")["provider"] == "ashby"
+    assert detect_ats("nothing here") is None
+
+
+def test_prefers_a_hiring_inbox_over_a_generic_address():
+    from tools.apply import find_application_email
+
+    assert find_application_email("write to support@acme.com or careers@acme.com") == "careers@acme.com"
+    assert find_application_email("only noreply@acme.com") is None
+    assert find_application_email("no addresses here") is None
+
+
+def test_finds_screening_questions_but_not_prose():
+    from tools.apply import find_screening_questions
+
+    found = find_screening_questions(
+        "How many years of Python do you have? Isn't the weather nice? Why do you want this role?"
+    )
+    assert any("years" in q for q in found)
+    assert not any("weather" in q for q in found)
+
+
+# --- store lifecycle -------------------------------------------------------
+
+def test_status_lifecycle_and_no_resurfacing(tmp_path, postings):
+    db = str(tmp_path / "t.db")
+    store.filter_new(postings, db)
+    assert store.get_status("1000001", db) == "new"
+
+    store.set_status("1000001", "notified", score=88, db_path=db)
+    assert store.get_status("1000001", db) == "notified"
+    record = store.get_posting_record("1000001", db)
+    assert record["score"] == 88 and record["notified_at"]
+
+    store.set_status("1000001", "applied_email", cover_letter="Dear team...", db_path=db)
+    record = store.get_posting_record("1000001", db)
+    assert record["status"] == "applied_email"
+    assert record["applied_at"] and record["cover_letter"] == "Dear team..."
+
+    # Nothing already handled comes back on a later run.
+    assert store.filter_new(postings, db) == []
+
+
+def test_unknown_status_is_refused(tmp_path, postings):
+    db = str(tmp_path / "t.db")
+    store.filter_new(postings, db)
+    assert store.set_status("1000001", "nonsense", db_path=db) is False
+    assert store.get_status("1000001", db) == "new"
+
+
+def test_old_database_is_migrated_in_place(tmp_path, postings):
+    import sqlite3
+
+    db = str(tmp_path / "legacy.db")
+    legacy = sqlite3.connect(db)
+    legacy.execute(
+        "CREATE TABLE seen_postings (id TEXT PRIMARY KEY, title TEXT, company TEXT,"
+        " seen_at TEXT DEFAULT CURRENT_TIMESTAMP)"
+    )
+    legacy.execute("INSERT INTO seen_postings (id, title, company) VALUES ('1000001', 'Old', 'Co')")
+    legacy.commit()
+    legacy.close()
+
+    # The old row still dedupes, and the new columns are usable.
+    assert [p["id"] for p in store.filter_new(postings, db)] != ["1000001"]
+    assert store.set_status("1000001", "skipped", db_path=db) is True
+    assert store.get_status("1000001", db) == "skipped"
+
+
+def test_submission_rate_limit(tmp_path, monkeypatch):
+    db = str(tmp_path / "t.db")
+    for _ in range(5):
+        store.log_submission("x", "email", "sent", "ok", db_path=db)
+    assert store.submissions_last_hour(db) == 5
+    allowed, reason = store.submission_allowed(db)
+    assert allowed is False and "Rate limit" in reason
+
+
+def test_failed_submissions_do_not_consume_the_rate_limit(tmp_path):
+    db = str(tmp_path / "t.db")
+    for _ in range(9):
+        store.log_submission("x", "email", "failed", "smtp down", db_path=db)
+    assert store.submissions_last_hour(db) == 0
+    assert store.submission_allowed(db)[0] is True
+
+
+# --- email construction (no network) ---------------------------------------
+
+def test_application_email_has_subject_body_and_no_attachment_when_resume_missing(tmp_path):
+    from tools.submit import build_email
+
+    applicant = {"fields": {
+        "name": "Test Person", "email": "test@example.com", "phone": "+1 555 0100",
+        "location": "Testville", "timezone": "UTC+2", "linkedin": "https://li/x",
+        "resume_path": str(tmp_path / "missing.pdf"),
+    }}
+    posting = {"id": "1", "title": "Backend Engineer", "company": "Acme"}
+    message = build_email(posting, applicant, "Letter body here.", "jobs@acme.com")
+    assert message["To"] == "jobs@acme.com"
+    assert "Backend Engineer" in message["Subject"]
+    assert "Letter body here." in message.get_content()
+    assert not list(message.iter_attachments())
+
+
+def test_application_email_attaches_the_resume_when_present(tmp_path):
+    from tools.submit import build_email
+
+    resume = tmp_path / "My_Resume.pdf"
+    resume.write_bytes(b"%PDF-1.4 fake")
+    applicant = {"fields": {"name": "T", "email": "t@example.com", "resume_path": str(resume)}}
+    message = build_email({"id": "1", "title": "Role"}, applicant, "Body", "jobs@acme.com")
+    attachments = list(message.iter_attachments())
+    assert len(attachments) == 1
+    assert attachments[0].get_filename() == "My_Resume.pdf"
+
+
+# --- ordered delivery ------------------------------------------------------
+
+def test_queued_notifications_flush_highest_score_first(monkeypatch, postings, tmp_path):
+    from tools import notify as notify_mod
+
+    notify_mod._pending.clear()
+    monkeypatch.setattr(store, "DB_PATH", str(tmp_path / "order.db"))
+    sent: list[str] = []
+    monkeypatch.setattr(notify_mod, "send", lambda msg, buttons=None, **kw: sent.append(msg) or "ok")
+
+    notify_mod.queue_job_notification(postings[1], 55, "mid")
+    notify_mod.queue_job_notification(postings[0], 91, "high")
+    notify_mod.queue_job_notification(postings[2], 70, "low-ish")
+    assert notify_mod.pending_count() == 3
+
+    delivered = notify_mod.flush_notifications()
+    assert delivered == 3
+    assert [line.split("]")[0] for line in sent] == ["[91/100", "[70/100", "[55/100"]
+    assert notify_mod.pending_count() == 0
+
+
+def test_marketing_questions_are_not_treated_as_screening_questions():
+    from tools.apply import find_screening_questions
+
+    # Job descriptions are full of rhetorical questions; none of these are
+    # things a form is asking the applicant.
+    assert find_screening_questions(
+        "Are you a talented Senior Developer looking for a remote job with decent compensation?"
+    ) == []
+    # Scraped pages carry embedded JSON, which must never become a question.
+    assert find_screening_questions('"description":" Are you a dev looking for work?') == []
+
+
+def test_screening_questions_are_deduplicated():
+    from tools.apply import find_screening_questions
+
+    found = find_screening_questions(
+        "What is your salary expectation? What is your salary expectation?"
+    )
+    assert len(found) == 1
