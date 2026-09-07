@@ -29,6 +29,11 @@ RUN_INTERVAL_MINUTES = int(os.getenv("RUN_INTERVAL_MINUTES", "30"))
 MAX_SUBMISSIONS_PER_HOUR = int(os.getenv("MAX_SUBMISSIONS_PER_HOUR", "5"))
 COVER_LETTER_MAX_WORDS = int(os.getenv("COVER_LETTER_MAX_WORDS", "220"))
 
+# Assisted form filling opens a REAL, VISIBLE browser window, so it needs a
+# desktop session. Set HEADED_BROWSER=false only for automated testing — a
+# headless fill is pointless, since the whole feature hands you the window.
+HEADED_BROWSER = os.getenv("HEADED_BROWSER", "true").strip().lower() in ("1", "true", "yes", "on")
+
 # --- Paths -----------------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROFILE_PATH = os.path.join(BASE_DIR, "profile.md")

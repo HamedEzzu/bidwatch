@@ -16,6 +16,7 @@ from tools.applicant import NEEDS_INPUT, answer_question, parse_applicant
 from tools.apply import METHOD_ATS, METHOD_EMAIL, METHOD_MANUAL, gather_requirements
 from tools.fetch import hydrate
 from tools.letter import generate_letter, revise_letter
+from tools.formfill import format_report, open_prefilled_application
 from tools.resume import (
     describe_selection,
     output_path,
@@ -302,6 +303,43 @@ def confirm_and_submit(posting_id: str) -> tuple[str, str]:
     set_status(posting_id, "applied_manual", cover_letter=letter)
     clear_draft(posting_id)
     return "applied_manual", handoff
+
+
+def fill_form(posting_id: str) -> tuple[bool, str]:
+    """Open the application page in a visible browser with the form filled in.
+
+    Returns (opened, message). Nothing is ever submitted: on success the user
+    is handed a filled form to review; on failure they get the manual handoff
+    so there is always a path forward.
+    """
+    draft = get_draft(posting_id)
+    if not draft:
+        return False, "That application draft is no longer active. Tap Bid again to restart."
+
+    posting, requirements = draft["posting"], draft["requirements"]
+    resume_path = draft.get("resume_path", "")
+    if not resume_path or not os.path.isfile(resume_path):
+        resume_path, _ = build_resume(posting)
+
+    result = open_prefilled_application(
+        posting,
+        {
+            "apply_url": requirements.get("apply_url") or posting.get("url", ""),
+            "applicant": draft["applicant"],
+            "letter": draft["letter"],
+            "answers": draft.get("answers", {}),
+        },
+        resume_path,
+    )
+
+    if result.get("error"):
+        handoff = manual_handoff(
+            posting, draft["applicant"], draft["letter"], requirements, draft.get("answers", {}),
+            reason=f"the browser could not fill this form ({result['error']})",
+        )
+        return False, f"{format_report(posting, result)}\n\nApply by hand instead:\n\n{handoff}"
+
+    return True, format_report(posting, result)
 
 
 def cancel(posting_id: str) -> str:

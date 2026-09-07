@@ -49,14 +49,25 @@ CONFIRM_BUTTONS = {
 TELEGRAM_LIMIT = 4000
 
 
-def confirm_buttons(posting_id: str) -> dict[str, Any]:
-    return {
-        "inline_keyboard": [
-            [{"text": button["text"], "callback_data": button["callback_data"].format(id=posting_id)}
-             for button in row]
-            for row in CONFIRM_BUTTONS["inline_keyboard"]
-        ]
-    }
+def confirm_buttons(posting_id: str, method: str = "") -> dict[str, Any]:
+    """Buttons under an application draft.
+
+    "Fill form" only appears for manual and ATS jobs: the email path already
+    submits properly, so opening a browser there would just be noise.
+    """
+    rows = [
+        [{"text": button["text"], "callback_data": button["callback_data"].format(id=posting_id)}
+         for button in row]
+        for row in CONFIRM_BUTTONS["inline_keyboard"]
+    ]
+    if method in ("manual", "known_ats"):
+        rows.insert(1, [{"text": "🖊 Fill form in browser", "callback_data": f"fill:{posting_id}"}])
+    return {"inline_keyboard": rows}
+
+
+def draft_method(posting_id: str) -> str:
+    draft = bidflow.get_draft(posting_id)
+    return ((draft or {}).get("requirements") or {}).get("method", "")
 
 
 def send_long(text: str, buttons: dict[str, Any] | None = None) -> None:
@@ -99,7 +110,18 @@ def handle_callback(callback: dict[str, Any]) -> None:
             send_message(f"Could not prepare this application: {draft['error']}")
             return
         edit_message(chat_id, message_id, f"📝 Bidding…\n\n{original}")
-        send_long(bidflow.render_draft(draft), confirm_buttons(posting_id))
+        send_long(bidflow.render_draft(draft), confirm_buttons(posting_id, draft_method(posting_id)))
+        return
+
+    if action == "fill":
+        answer_callback(callback_id, "Opening the browser…")
+        send_message("Opening the application page and filling it in — the browser window is on your desktop.")
+        opened, message = bidflow.fill_form(posting_id)
+        send_long(message)
+        if opened:
+            # The form is filled but nothing is submitted; the draft stays
+            # active so the user can still cancel or use another path.
+            send_message("Review it in the browser, then submit it yourself. BidWatch never clicks submit.")
         return
 
     if action == "edit":
@@ -174,7 +196,7 @@ def handle_message(message: dict[str, Any]) -> None:
     if "error" in draft:
         send_message(draft["error"])
         return
-    send_long(bidflow.render_draft(draft), confirm_buttons(posting_id))
+    send_long(bidflow.render_draft(draft), confirm_buttons(posting_id, draft_method(posting_id)))
 
 
 def poll(poll_timeout: int = 30) -> None:

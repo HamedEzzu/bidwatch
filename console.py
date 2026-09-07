@@ -57,7 +57,19 @@ def review_loop(posting_id: str, draft: dict[str, Any]) -> None:
         print("\n" + "-" * 72)
         print(bidflow.render_draft(draft))
         print("-" * 72)
-        choice = _ask("[c]onfirm & submit  [e]dit letter  [r]ésumé path  [x] cancel  > ", {"c", "e", "r", "x"})
+        method = (draft.get("requirements") or {}).get("method", "")
+        prompt = "[c]onfirm & submit  [e]dit letter  [r]ésumé path  "
+        options = {"c", "e", "r", "x"}
+        if method in ("manual", "known_ats"):
+            prompt += "[f]ill form in browser  "
+            options.add("f")
+        choice = _ask(prompt + "[x] cancel  > ", options)
+
+        if choice == "f":
+            print("\nOpening the application page in a browser…\n")
+            _, message = bidflow.fill_form(posting_id)
+            print(message + "\n")
+            continue
 
         if choice == "r":
             path = draft.get("resume_path", "")

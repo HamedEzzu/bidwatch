@@ -73,6 +73,13 @@ flowchart TD
     AT -->|token missing or schema mismatch| MH
     S -->|manual| MH[Hand back apply URL, letter and fields] --> OK3([applied_manual])
 
+    D -->|Fill form in browser| FF[Playwright: open a visible window]
+    FF --> DET[Detect fields: labels, name/id, placeholder, aria]
+    DET --> MAP[Match: ATS selectors, then attributes, then labels, then the model]
+    MAP --> FILL[Fill fields, upload the tailored résumé, inject the review banner]
+    FILL --> HAND([Browser handed to the user — never submitted])
+    FF -.->|page blocked or no form found| MH
+
     style X fill:#fee,stroke:#c00
 ```
 
@@ -166,6 +173,31 @@ The same six steps can run either way:
 - **`--mode pipeline`**: the same tools called deterministically from Python. Used by
   `--dry-run` (zero model calls) and useful when a run must be exactly predictable
   or maximally cheap.
+
+## Form-field matching
+
+Four layers, cheapest and most reliable first. Each fill records the layer that chose
+it, so a wrong value can be traced back to the decision that produced it.
+
+```mermaid
+flowchart LR
+    F[Detected field] --> A{Known ATS?}
+    A -->|Greenhouse, Lever, Ashby, Workable| P[Provider selector]
+    A -->|no| B{name / id exact match?}
+    B -->|yes| AT[Attribute match]
+    B -->|no| C{Label contains a known phrase?}
+    C -->|yes| L[Label match]
+    C -->|no| M{{Model: which stored value fits?}}
+    M -->|names a real value| MM[Model match]
+    M -->|null or unknown name| U[Left blank and reported]
+    P --> FILL[Fill]
+    AT --> FILL
+    L --> FILL
+    MM --> FILL
+```
+
+The matching functions are pure and take plain field descriptors, so every layer is
+unit-tested without a browser. Playwright appears only in the thin execution layer.
 
 ## Résumé selection
 

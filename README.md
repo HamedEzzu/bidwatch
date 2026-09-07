@@ -74,7 +74,8 @@ Tapping **Bid** runs four steps, and stops before the fifth until you confirm:
    this job** (see below). A screening question that `applicant.md` can't answer is
    marked `⚠️ NEEDS YOUR INPUT` rather than guessed at.
 3. **Review** — the complete filled application comes back in chat, with
-   **Confirm & Submit** · **Edit letter** · **View résumé** · **Cancel**.
+   **Confirm & Submit** · **Edit letter** · **View résumé** · **Cancel**, plus
+   **Fill form in browser** on manual and ATS jobs.
 4. **Edit** — reply in plain language ("make it shorter", "less formal", "mention the
    WebSockets project") and the letter is rewritten and re-shown. Loop as long as you
    like. Each job's draft is kept separately, so two bids in progress never collide.
@@ -123,6 +124,63 @@ the actual PDF to your chat so you can read it before confirming. On the manual 
 the file is sent to the chat too, so you can upload it to their form in seconds. If
 generation fails for any reason, the static `My_Resume.pdf` from `applicant.md` is
 attached instead and the draft says so — a résumé problem never blocks an application.
+
+### Assisted form filling
+
+Most job applications are a web form nobody can post to programmatically. For those,
+BidWatch opens the page in a **real, visible browser**, fills in everything it can, and
+hands you the window.
+
+Tap **🖊 Fill form in browser** on a manual or ATS job (the button doesn't appear on
+email jobs — that path already submits properly) and BidWatch will:
+
+1. Open the application URL in a visible Chromium window.
+2. Read every field on the page — labels, `name`/`id`, placeholders, `aria-label`.
+3. Match fields to your data in three layers: **exact attribute** names first, then
+   **fuzzy label** matching, then the **model** for whatever is left over.
+4. Fill what it confidently matched, and upload your tailored résumé to the file input.
+5. Scroll to the top and drop a banner across the page:
+   *BidWatch filled this form — review every field, then submit manually.*
+6. Report back in Telegram: what it filled, what it couldn't match, and anything that
+   looks required but is still blank.
+
+```
+Form opened and filled — Acme Corp
+
+✅ Filled: first name, last name, email, phone, LinkedIn, cover letter, résumé
+⚠️ Could not match: "Why do you want to work here?"
+⚠️ Left blank (looks required): "Salary expectation"
+
+Nothing was submitted. Review every field in the browser window, then submit it yourself.
+```
+
+> **BidWatch never clicks submit.** Not on a timer, not on your behalf, not ever. The
+> browser is left open with the form filled and control passes to you. There is no code
+> path in `tools/formfill.py` that clicks, submits, or presses Enter — and a test reads
+> the module's own source to assert that stays true.
+
+Greenhouse, Lever, Ashby and Workable are handled with provider-specific selectors
+first, since their DOM structures are stable and they account for a large share of
+postings. The model layer can only choose among values that actually exist in
+`applicant.md` — it cannot invent one — and a field it isn't sure about is left blank,
+because a wrong answer on a job application is worse than an empty box. Every mapping
+decision is logged with the layer that made it, so a bad fill is diagnosable.
+
+If the page won't load, the form isn't detectable, or the site blocks automation, you
+get the manual handoff instead — the apply URL, the letter, and the résumé — with an
+explanation of what went wrong. There is always a path forward.
+
+**Requirements.** This needs a desktop session:
+
+```bash
+pip install playwright
+playwright install chromium
+```
+
+`HEADED_BROWSER=true` (the default) opens a real window. **This feature cannot work
+when BidWatch runs headless on a server** — the whole point is handing you a browser to
+review. Everything else in BidWatch runs fine headless; only this button needs a
+screen.
 
 **Be clear about the limits: fully automated submission covers email and supported ATS
 providers only.** Everything else is a manual handoff with the letter already written.
@@ -202,11 +260,12 @@ bidwatch/
 │   ├── letter.py               # cover letter generation and revision
 │   ├── resume.py               # career database parsing, selection, PDF rendering
 │   ├── submit.py               # SMTP, ATS attempt, manual handoff
+│   ├── formfill.py             # Playwright form detection, matching and filling
 │   ├── notify.py               # message format, buttons, Telegram transport
 │   └── llm.py                  # shared Bedrock client + token accounting
 ├── generated_resumes/          # tailored PDFs, one per application (gitignored)
 ├── fixtures/sample_postings.json   # for --dry-run
-├── tests/                      # 71 tests, no network, no model calls, no mail
+├── tests/                      # 93 tests: no network, no model calls, no mail, no browser
 └── docs/architecture.md
 ```
 
@@ -373,6 +432,7 @@ All in [`config.py`](config.py), each overridable by an environment variable.
 | `SCORE_THRESHOLD` | `SCORE_THRESHOLD` | `65` | Notify only above this score. |
 | `MAX_POSTINGS_PER_RUN` | `MAX_POSTINGS_PER_RUN` | `15` | Hard cap on postings scored per run. |
 | `MAX_SUBMISSIONS_PER_HOUR` | `MAX_SUBMISSIONS_PER_HOUR` | `5` | Ceiling on confirmed applications per rolling hour. |
+| `HEADED_BROWSER` | `HEADED_BROWSER` | `true` | Open a visible browser for form filling. Needs a desktop session. |
 | `RUN_INTERVAL_MINUTES` | `RUN_INTERVAL_MINUTES` | `30` | Scheduled interval (floored at 15). |
 | `MAX_DESCRIPTION_CHARS` | — | `2000` | Truncation before the model sees a description. |
 
@@ -501,6 +561,9 @@ usage is logged after every run.
 - **The "About" line and screening questions are extracted, not generated.** When a
   page yields nothing useful, you get a shorter message rather than a plausible
   invention.
+- **Form filling needs a desktop session.** It opens a real window by design; it cannot
+  work on a headless server, and it will not fill forms behind a login wall or inside a
+  cross-origin iframe.
 - **The listener is long-polling, not a webhook.** Simple to run anywhere, but it must
   be running for buttons to respond.
 
