@@ -191,7 +191,10 @@ def manual_handoff(
     resume_path = fields.get("resume_path", "")
     if resume_path:
         exists = os.path.isfile(resume_path)
-        lines.append(f"  Résumé: {resume_path}{'' if exists else '  (FILE NOT FOUND)'}")
+        label = os.path.basename(resume_path) if exists else f"{resume_path}  (FILE NOT FOUND)"
+        lines.append(f"  Résumé: {label}")
+        if exists:
+            lines.append("           (sent to this chat — upload that file with the form)")
 
     for question, answer in (answers or {}).items():
         marker = "  " if answer != NEEDS_INPUT else "  "

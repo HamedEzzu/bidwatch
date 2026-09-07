@@ -130,7 +130,7 @@ def load_fixture_postings(path: str = FIXTURE_PATH) -> list[dict[str, Any]]:
 
 
 #: Skills worth spending the per-run scoring budget on, derived from the
-#: profile's "Strong skills" section. Used only to ORDER candidates, never to
+#: profile's Skills section. Used only to ORDER candidates, never to
 #: discard them, and it costs nothing — no model call is involved.
 PRIORITY_KEYWORDS = (
     "python", "fastapi", "django", "sqlalchemy", "pytest", "c#", "csharp",

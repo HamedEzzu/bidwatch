@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import time
 from typing import Any
@@ -20,16 +21,28 @@ from typing import Any
 from dotenv import load_dotenv
 
 import bidflow
-from tools.notify import answer_callback, edit_message, get_updates, send_message, telegram_configured
+from tools.notify import (
+    answer_callback,
+    edit_message,
+    get_updates,
+    send_document,
+    send_message,
+    telegram_configured,
+)
 
 logger = logging.getLogger("bidwatch.bot")
 
 CONFIRM_BUTTONS = {
-    "inline_keyboard": [[
-        {"text": "📤 Confirm & Submit", "callback_data": "confirm:{id}"},
-        {"text": "✏️ Edit letter", "callback_data": "edit:{id}"},
-        {"text": "✖️ Cancel", "callback_data": "cancel:{id}"},
-    ]]
+    "inline_keyboard": [
+        [
+            {"text": "📤 Confirm & Submit", "callback_data": "confirm:{id}"},
+            {"text": "✏️ Edit letter", "callback_data": "edit:{id}"},
+        ],
+        [
+            {"text": "📄 View résumé", "callback_data": "resume:{id}"},
+            {"text": "✖️ Cancel", "callback_data": "cancel:{id}"},
+        ],
+    ]
 }
 
 # Telegram rejects messages over 4096 characters.
@@ -38,10 +51,11 @@ TELEGRAM_LIMIT = 4000
 
 def confirm_buttons(posting_id: str) -> dict[str, Any]:
     return {
-        "inline_keyboard": [[
-            {"text": button["text"], "callback_data": button["callback_data"].format(id=posting_id)}
-            for button in CONFIRM_BUTTONS["inline_keyboard"][0]
-        ]]
+        "inline_keyboard": [
+            [{"text": button["text"], "callback_data": button["callback_data"].format(id=posting_id)}
+             for button in row]
+            for row in CONFIRM_BUTTONS["inline_keyboard"]
+        ]
     }
 
 
@@ -99,6 +113,18 @@ def handle_callback(callback: dict[str, Any]) -> None:
         )
         return
 
+    if action == "resume":
+        answer_callback(callback_id, "Sending the résumé…")
+        draft = bidflow.get_draft(posting_id)
+        path = (draft or {}).get("resume_path", "")
+        if not path or not os.path.isfile(path):
+            send_message("No résumé has been built for this application. Tap Bid again to rebuild it.")
+            return
+        note = (draft or {}).get("resume_note", "")
+        if not send_document(path, caption=f"Tailored résumé — {note}" if note else "Tailored résumé"):
+            send_message(f"Could not upload the résumé. It is on disk at:\n{path}")
+        return
+
     if action == "cancel":
         answer_callback(callback_id, "Cancelled")
         send_message(bidflow.cancel(posting_id))
@@ -106,6 +132,8 @@ def handle_callback(callback: dict[str, Any]) -> None:
 
     if action == "confirm":
         answer_callback(callback_id, "Submitting…")
+        # Captured before submission clears the draft.
+        resume_before = (bidflow.get_draft(posting_id) or {}).get("resume_path", "")
         status, detail = bidflow.confirm_and_submit(posting_id)
         headers = {
             "applied_email": "✅ Applied by email",
@@ -114,6 +142,10 @@ def handle_callback(callback: dict[str, Any]) -> None:
             "failed": "⚠️ Not sent",
         }
         send_long(f"{headers.get(status, status)}\n\n{detail}")
+        if status == "applied_manual" and resume_before:
+            # Manual submission means the user uploads it themselves, so put the
+            # file in the chat rather than only naming its path.
+            send_document(resume_before, caption="Tailored résumé for this application")
         return
 
     answer_callback(callback_id, "Unknown action")

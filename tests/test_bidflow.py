@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import bidflow  # noqa: E402
 from agent import load_fixture_postings  # noqa: E402
 from tools import apply as apply_mod  # noqa: E402
-from tools import fetch, letter, store, submit  # noqa: E402
+from tools import fetch, letter, resume, store, submit  # noqa: E402
 
 
 @pytest.fixture
@@ -34,6 +34,10 @@ def wired(tmp_path, monkeypatch):
     monkeypatch.setattr(submit, "log_submission", lambda *a, **k: store.log_submission(*a, db_path=db, **k))
 
     monkeypatch.setattr(letter, "complete", lambda system, user: "Generated letter about the actual problem.")
+    # No model call for résumé selection either: use the deterministic path.
+    monkeypatch.setattr(resume, "complete", lambda system, user: "")
+    monkeypatch.setattr(resume, "RESUME_DIR", str(tmp_path / "resumes"))
+    monkeypatch.setattr(bidflow, "output_path", lambda posting: resume.output_path(posting, str(tmp_path / "resumes")))
     monkeypatch.setattr(
         apply_mod, "_fetch_page",
         lambda url: (url, "<p>Send your CV to careers@orbital.example</p>"),

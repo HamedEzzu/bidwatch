@@ -54,8 +54,13 @@ flowchart TD
     E --> F[Fill from applicant.md + generate cover letter]
     A --> F
     M --> F
-    F --> QQ[Unanswerable screening questions marked NEEDS YOUR INPUT]
-    QQ --> D[Show the complete draft]
+    F --> RES[Build tailored résumé: select from profile.md, render one-page PDF]
+    RES -.->|generation failed| STATIC[Fall back to static My_Resume.pdf]
+    F --> QQ2[Unanswerable screening questions marked NEEDS YOUR INPUT]
+    QQ2 --> QQ[ ]
+    RES --> QQ
+    STATIC --> QQ
+    QQ --> D[Show the complete draft + View résumé]
 
     D --> B{User decides}
     B -->|Edit letter| ED[Revise from plain-language instruction] --> D
@@ -161,6 +166,27 @@ The same six steps can run either way:
 - **`--mode pipeline`**: the same tools called deterministically from Python. Used by
   `--dry-run` (zero model calls) and useful when a run must be exactly predictable
   or maximally cheap.
+
+## Résumé selection
+
+The model never writes résumé text. It returns identifiers — a summary variant name,
+skill group names, project names and bullet **indices** — and every line is then copied
+verbatim out of `profile.md`. Unknown names and out-of-range indices are discarded, and
+an unusable response falls back to deterministic tag matching. Invention is not
+forbidden by instruction; it has no path into the document.
+
+```mermaid
+flowchart LR
+    P[profile.md career database] --> C[Catalogue: names + bullet indices]
+    J[Job posting] --> M{{Model}}
+    C --> M
+    M --> S["{summary, skills, projects, bullet indices}"]
+    S --> V[Validate: drop anything not in the database]
+    V -->|nothing survives| FB[Deterministic tag-overlap selection]
+    V --> R[Render: text copied verbatim from profile.md]
+    FB --> R
+    R --> PDF[(One-page ATS-friendly PDF)]
+```
 
 ## Source abstraction
 

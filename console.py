@@ -57,7 +57,12 @@ def review_loop(posting_id: str, draft: dict[str, Any]) -> None:
         print("\n" + "-" * 72)
         print(bidflow.render_draft(draft))
         print("-" * 72)
-        choice = _ask("[c]onfirm & submit  [e]dit letter  [x] cancel  > ", {"c", "e", "x"})
+        choice = _ask("[c]onfirm & submit  [e]dit letter  [r]ésumé path  [x] cancel  > ", {"c", "e", "r", "x"})
+
+        if choice == "r":
+            path = draft.get("resume_path", "")
+            print(f"\nTailored résumé: {path or 'none built'}\n")
+            continue
 
         if choice == "x":
             print(bidflow.cancel(posting_id) + "\n")
@@ -78,6 +83,7 @@ def review_loop(posting_id: str, draft: dict[str, Any]) -> None:
                 return
             continue
 
+        resume_path = draft.get("resume_path", "")
         status, detail = bidflow.confirm_and_submit(posting_id)
         headers = {
             "applied_email": "✅ Applied by email",
@@ -86,4 +92,6 @@ def review_loop(posting_id: str, draft: dict[str, Any]) -> None:
             "failed": "⚠️ Not sent",
         }
         print(f"\n{headers.get(status, status)}\n\n{detail}\n")
+        if status == "applied_manual" and resume_path:
+            print(f"Upload this résumé with the form: {resume_path}\n")
         return

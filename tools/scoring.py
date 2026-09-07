@@ -20,8 +20,9 @@ The score answers ONE question: how well does this work match what the
 freelancer can actually do, at a rate they would accept?
 
 Weigh, in order:
-1. Stack overlap with the profile's "Strong skills" — this dominates the score.
-   Overlap with "Willing, but not expert" counts for less but still counts.
+1. Stack overlap with the profile's "Skills" and "Projects" sections — this
+   dominates the score. Overlap with "Willing, but not expert" counts for less
+   but still counts.
 2. Deal-breakers. If the posting matches anything under "Will not bid on"
    (page-builder/WordPress work, pure visual design, on-site presence, a
    required language other than English or Arabic, trivially small budgets),

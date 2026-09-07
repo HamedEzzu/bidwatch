@@ -69,11 +69,12 @@ Tapping **Bid** runs four steps, and stops before the fifth until you confirm:
    **email** address found in the posting, a **known ATS** (Greenhouse, Lever, Ashby,
    Workable), or **manual** for custom forms and login-gated pages. It also collects
    the fields and any screening questions the page asks.
-2. **Fill** — populates everything from `applicant.md` and writes a cover letter
-   tailored to that posting, in the voice from `profile.md`. A screening question that
-   `applicant.md` can't answer is marked `⚠️ NEEDS YOUR INPUT` rather than guessed at.
+2. **Fill** — populates everything from `applicant.md`, writes a cover letter tailored
+   to that posting in the voice from `profile.md`, and **builds a résumé selected for
+   this job** (see below). A screening question that `applicant.md` can't answer is
+   marked `⚠️ NEEDS YOUR INPUT` rather than guessed at.
 3. **Review** — the complete filled application comes back in chat, with
-   **Confirm & Submit** · **Edit letter** · **Cancel**.
+   **Confirm & Submit** · **Edit letter** · **View résumé** · **Cancel**.
 4. **Edit** — reply in plain language ("make it shorter", "less formal", "mention the
    WebSockets project") and the letter is rewritten and re-shown. Loop as long as you
    like. Each job's draft is kept separately, so two bids in progress never collide.
@@ -81,9 +82,47 @@ Tapping **Bid** runs four steps, and stops before the fifth until you confirm:
 
 | Path | What happens |
 |---|---|
-| `email` | Sent over SMTP: letter as the body, résumé attached, subject naming the role. |
+| `email` | Sent over SMTP: letter as the body, the **tailored** résumé attached, subject naming the role. |
 | `known_ats` | Attempts the provider's application endpoint. Most boards require a per-employer token this project doesn't hold — when that happens it falls back to the manual path **and says so**. |
-| `manual` | Hands you the apply URL, the finished letter in a copy-friendly block, and every field ready to paste. |
+| `manual` | Hands you the apply URL, the finished letter in a copy-friendly block, every field ready to paste, and the tailored résumé sent to your chat to upload. |
+
+### Tailored résumé generation
+
+Every bid builds its own résumé. Not a template with the job title swapped in — a
+genuine re-selection from your career database for that specific posting.
+
+The model reads the posting, identifies the primary stack and key requirements, and
+chooses: which **summary variant** (.NET, Python, Node/full-stack, or general backend),
+which **skill groups** and in what order (the job's stack leads), the **2–3 most
+relevant projects**, and *within each project, only the bullets that support this
+application*. The Restaurant platform has Python bullets, concurrency bullets and
+DevOps bullets — a data-integrity role gets the concurrency ones, a full-stack role
+gets the real-time and frontend ones. Awards, education, certifications and languages
+are always included.
+
+**The rule that makes this safe: selection, never invention.** This is enforced
+structurally, not by asking the model nicely. The model is never given the opportunity
+to write résumé text — it returns *identifiers*: a variant name, skill group names,
+project names, and bullet **indices**. Every line that reaches the PDF is then copied
+verbatim from `profile.md`. A name or index that doesn't exist is discarded and logged;
+if the response is unusable, a deterministic tag-overlap selection takes over. There is
+no code path where a model-authored sentence lands on your résumé, so "reworded to
+sound stronger" cannot happen. A test asserts every rendered line appears in
+`profile.md`.
+
+The PDF is deliberately plain, because ATS parsers are: one column, standard Helvetica,
+no tables, no graphics, no text inside images, hyphen bullets (the standard `•` glyph
+falls outside the base font encoding and extracts as junk — a detail that quietly
+breaks résumé parsers). One page is a hard constraint: content is re-laid out under
+progressively tighter budgets, dropping the *lowest-ranked* material first, until it
+fits.
+
+Files land in `generated_resumes/<company>_<job-title>_<date>.pdf` (gitignored). The
+draft review shows which variant was built and why, and a **View résumé** button sends
+the actual PDF to your chat so you can read it before confirming. On the manual path
+the file is sent to the chat too, so you can upload it to their form in seconds. If
+generation fails for any reason, the static `My_Resume.pdf` from `applicant.md` is
+attached instead and the draft says so — a résumé problem never blocks an application.
 
 **Be clear about the limits: fully automated submission covers email and supported ATS
 providers only.** Everything else is a manual handoff with the letter already written.
@@ -138,6 +177,7 @@ sequence — are in [docs/architecture.md](docs/architecture.md).
 | `score_posting` | `(posting_json: str, profile: str) -> str` | Model reasoning: returns `{"score": 0-100, "rationale": "..."}`. Deal-breaker matches are forced below 20. Malformed model output is parsed defensively and defaults low. |
 | `send_notification` | `(posting_id: str, score: int, rationale: str) -> str` | Notifies about one job. The model passes only the id, score and rationale — BidWatch builds the message and attaches the buttons, so the format is guaranteed whatever the model writes. |
 | `send_run_summary` | `(new_count: int, notified_count: int) -> str` | The single closing line, sent only when something qualified. |
+| `generate_resume` | `(posting_json: str, profile: str) -> str` | Builds the job-tailored one-page PDF by selecting from the career database, and returns its path. Selection only — it cannot author résumé text. |
 
 ### Project layout
 
@@ -160,11 +200,13 @@ bidwatch/
 │   ├── scoring.py              # fit scoring + defensive parsing
 │   ├── apply.py                # how to apply: email / known ATS / manual
 │   ├── letter.py               # cover letter generation and revision
+│   ├── resume.py               # career database parsing, selection, PDF rendering
 │   ├── submit.py               # SMTP, ATS attempt, manual handoff
 │   ├── notify.py               # message format, buttons, Telegram transport
 │   └── llm.py                  # shared Bedrock client + token accounting
+├── generated_resumes/          # tailored PDFs, one per application (gitignored)
 ├── fixtures/sample_postings.json   # for --dry-run
-├── tests/                      # 57 tests, no network, no model calls, no mail
+├── tests/                      # 71 tests, no network, no model calls, no mail
 └── docs/architecture.md
 ```
 
@@ -207,7 +249,7 @@ cp .env.example .env
 
 | File | Answers | In git? |
 |---|---|---|
-| `profile.md` | *Is this job worth bidding on?* — skills, rates, deal-breakers, the voice you write in | yes |
+| `profile.md` | *Is this job worth bidding on?* — rates, deal-breakers, voice — **and the career database** the résumé generator selects from: summary variants, skills by ecosystem, projects with tagged bullets, awards, education, certifications | yes |
 | `applicant.md` | *What goes in the form?* — name, email, phone, links, résumé path, your standard answers | no, gitignored |
 
 Copy `applicant.example.md` to `applicant.md` and fill it in before your first bid.
@@ -454,6 +496,8 @@ usage is logged after every run.
   most ATS jobs take the manual path — with the letter already written and every field
   ready to paste. BidWatch tells you which path it actually took, every time.
 - **The feed is ~24 hours behind the Remote OK website.** A daily scout, not a race.
+- **Résumés are assembled from what you wrote, so they are only as good as
+  `profile.md`.** A project you never added cannot appear on a résumé, by design.
 - **The "About" line and screening questions are extracted, not generated.** When a
   page yields nothing useful, you get a shorter message rather than a plausible
   invention.
@@ -477,7 +521,6 @@ usage is logged after every run.
 - **A web dashboard** for reviewing the queue when Telegram isn't the right surface.
 - **More ATS coverage**, including authenticated Greenhouse/Lever submissions where the
   employer's board key is available.
-- **Résumé tailoring** per posting, not just the cover letter.
 - **Outcome tracking**: which letters got replies, feeding back into scoring.
 
 ---

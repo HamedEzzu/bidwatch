@@ -106,7 +106,9 @@ def test_dedupe_handles_empty_input(tmp_path):
 
 def test_profile_loads_real_file():
     text = profile.read_profile()
-    assert "Strong skills" in text and "Will not bid on" in text
+    # The profile is both the bidding rules and the résumé source material.
+    assert "Will not bid on" in text and "Proposal voice" in text
+    assert "## Skills" in text and "## Projects" in text and "## Summaries" in text
 
 
 def test_missing_profile_returns_error_string_not_exception(tmp_path):
@@ -507,3 +509,177 @@ def test_screening_questions_are_deduplicated():
         "What is your salary expectation? What is your salary expectation?"
     )
     assert len(found) == 1
+
+
+# --- career database and tailored résumés ----------------------------------
+
+def test_committed_profile_holds_no_contact_details():
+    """profile.md is public; phone numbers and addresses belong in applicant.md."""
+    import re
+
+    from config import PROFILE_PATH
+
+    with open(PROFILE_PATH, encoding="utf-8") as handle:
+        text = handle.read()
+    assert not re.search(r"\+\d[\d ()-]{7,}", text), "a phone number is committed in profile.md"
+    assert not re.search(r"[\w.+-]+@[\w-]+\.[\w.]+", text), "an email address is committed in profile.md"
+
+
+def test_career_database_parses_every_section():
+    from tools.resume import parse_career_database
+
+    db = parse_career_database()
+    assert set(db["summaries"]) >= {"dotnet", "python", "node", "backend"}
+    assert len(db["projects"]) >= 2
+    # The headline is in the committed profile; contact details are merged in
+    # from applicant.md, which is gitignored and may be absent on a fresh clone.
+    assert db["identity"]["headline"]
+    assert db["awards"] and db["education"] and db["certifications"] and db["languages"]
+    # Every bullet carries text and tags, and no separator leaked in as a bullet.
+    for project in db["projects"]:
+        assert project["bullets"]
+        for bullet in project["bullets"]:
+            assert bullet["text"].strip()
+            assert "{tags:" not in bullet["text"]
+
+
+def test_dotnet_job_selects_the_dotnet_variant_and_leads_with_dotnet_skills():
+    from tools.resume import fallback_selection, parse_career_database
+
+    db = parse_career_database()
+    selection = fallback_selection(
+        {"title": "Senior .NET Developer", "tags": ["c#", "asp.net"],
+         "description": "ASP.NET Core, Entity Framework Core and SQL Server."},
+        db,
+    )
+    assert selection["summary"] == "dotnet"
+    assert selection["skills"][0] == ".NET backend"
+
+
+def test_python_job_selects_the_python_variant():
+    from tools.resume import fallback_selection, parse_career_database
+
+    selection = fallback_selection(
+        {"title": "Python Backend Engineer", "tags": ["python", "fastapi"],
+         "description": "FastAPI, async SQLAlchemy and PostgreSQL."},
+        parse_career_database(),
+    )
+    assert selection["summary"] == "python"
+
+
+def test_selection_can_only_reference_content_that_exists():
+    """The invention guard: anything not in the database is discarded."""
+    from tools.resume import parse_career_database, validate_selection
+
+    db = parse_career_database()
+    result = validate_selection(
+        {"summary": "python",
+         "projects": [
+             {"name": "Restaurant Chain Management System", "bullets": [0, 1]},
+             {"name": "Fictional Job at Google", "bullets": [0]},   # never existed
+         ],
+         "skills": ["Python backend", "Quantum Computing"]},        # second is invented
+        db,
+    )
+    assert [p["name"] for p in result["projects"]] == ["Restaurant Chain Management System"]
+    assert "Quantum Computing" not in result["skills"]
+
+
+def test_out_of_range_bullet_indices_are_dropped():
+    from tools.resume import parse_career_database, validate_selection
+
+    db = parse_career_database()
+    result = validate_selection(
+        {"summary": "python",
+         "projects": [{"name": "Restaurant Chain Management System", "bullets": [0, 99, -3]}],
+         "skills": []},
+        db,
+    )
+    assert result["projects"][0]["bullets"] == [0]
+
+
+def test_unusable_selection_returns_none_so_the_caller_falls_back():
+    from tools.resume import parse_career_database, validate_selection
+
+    assert validate_selection({"summary": "nope", "projects": [], "skills": []}, parse_career_database()) is None
+
+
+def test_generated_resume_is_one_page_with_extractable_text(tmp_path):
+    from pypdf import PdfReader
+
+    from tools.resume import fallback_selection, parse_career_database, render_pdf
+
+    db = parse_career_database()
+    posting = {"title": "Backend Engineer", "company": "Acme", "tags": ["python", "postgres"],
+               "description": "FastAPI and PostgreSQL, Docker deployment, WebSockets."}
+    path = render_pdf(fallback_selection(posting, db), db, str(tmp_path / "out.pdf"))
+
+    reader = PdfReader(path)
+    assert len(reader.pages) == 1, "the résumé must fit one page"
+    text = reader.pages[0].extract_text()
+    assert "Backend Software Engineer" in text
+    assert "SUMMARY" in text and "PROJECTS" in text and "EDUCATION" in text
+    # ATS-friendly: no un-extractable glyph junk.
+    assert chr(127) not in text
+    assert len(text) > 1500
+
+
+def test_every_rendered_line_exists_in_the_career_database(tmp_path):
+    """Nothing reaches the PDF that was not copied from profile.md."""
+    import re
+
+    from pypdf import PdfReader
+
+    from tools.resume import fallback_selection, parse_career_database, render_pdf
+
+    db = parse_career_database()
+    posting = {"title": "Full Stack Developer", "company": "Acme", "tags": ["react", "node"],
+               "description": "React and TypeScript frontend with a Node backend."}
+    path = render_pdf(fallback_selection(posting, db), db, str(tmp_path / "out.pdf"))
+    text = PdfReader(path).pages[0].extract_text()
+
+    def normalize(value: str) -> str:
+        return re.sub(r"\s+", " ", value).strip().lower()
+
+    source = normalize(" ".join(
+        [" ".join(db["summaries"].values())]
+        + [f"{s['group']}: {s['text']}" for s in db["skills"]]
+        + [b["text"] for p in db["projects"] for b in p["bullets"]]
+        + [f"{p['name']} — {p['role']}" for p in db["projects"]]
+        + [p["stack"] for p in db["projects"]]
+        + db["awards"] + db["education"] + db["certifications"] + db["languages"]
+        + list(db["identity"].values())
+    ))
+
+    # Every sentence of body text on the page must appear in the source file.
+    # Composed lines (the contact strip joins identity fields with "|") are
+    # checked field by field.
+    for line in text.splitlines():
+        for part in line.split("|"):
+            candidate = normalize(part.lstrip("- "))
+            if len(candidate) < 40:
+                continue  # headings, wrapped fragments, single contact fields
+            assert candidate in source or candidate[:60] in source, f"invented content: {part[:80]!r}"
+
+
+def test_output_path_is_company_job_date():
+    import datetime as dt
+
+    from tools.resume import output_path
+
+    path = output_path({"company": "FastLane Group", "title": "Full Stack Developer"}, "/tmp/x")
+    assert path.endswith(f"fastlane-group_full-stack-developer_{dt.date.today().isoformat()}.pdf")
+
+
+def test_irrelevant_skill_groups_are_dropped_from_a_tailored_resume():
+    from tools.resume import MAX_SKILL_GROUPS, fallback_selection, parse_career_database
+
+    db = parse_career_database()
+    selection = fallback_selection(
+        {"title": "Python Backend Engineer", "tags": ["python", "fastapi"],
+         "description": "FastAPI, async SQLAlchemy, PostgreSQL, Docker."},
+        db,
+    )
+    assert len(selection["skills"]) <= MAX_SKILL_GROUPS
+    assert len(selection["skills"]) < len(db["skills"]), "a tailored résumé should not list every group"
+    assert "Desktop" not in selection["skills"]

@@ -13,3 +13,6 @@ awscliv2.zip
 # Personal application data and documents
 applicant.md
 *.pdf
+
+# Tailored resumes are generated per application
+generated_resumes/

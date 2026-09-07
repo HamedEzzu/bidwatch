@@ -211,6 +211,34 @@ def answer_callback(callback_id: str, text: str = "") -> bool:
     return _call("answerCallbackQuery", {"callback_query_id": callback_id, "text": text[:200]}) is not None
 
 
+def send_document(path: str, caption: str = "", chat_id: str | None = None) -> bool:
+    """Upload a file (the tailored résumé) to the chat so it can be inspected."""
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID")
+    if not (token and chat_id):
+        logger.info("Telegram not configured; the résumé is on disk at %s", path)
+        return False
+    if not os.path.isfile(path):
+        logger.error("Cannot send %s: file not found", path)
+        return False
+    try:
+        with open(path, "rb") as handle:
+            response = requests.post(
+                TELEGRAM_API.format(token=token, method="sendDocument"),
+                data={"chat_id": chat_id, "caption": caption[:1000]},
+                files={"document": (os.path.basename(path), handle, "application/pdf")},
+                timeout=60,
+            )
+        body = response.json()
+        if response.status_code == 200 and body.get("ok"):
+            logger.info("Sent %s to Telegram", os.path.basename(path))
+            return True
+        logger.error("sendDocument failed: HTTP %s %s", response.status_code, str(body)[:300])
+    except (requests.RequestException, ValueError, OSError) as exc:
+        logger.error("sendDocument failed: %s", exc)
+    return False
+
+
 def get_updates(offset: int | None = None, timeout: int = 30) -> list[dict[str, Any]]:
     """Long-poll for new updates (button taps and text replies)."""
     payload: dict[str, Any] = {"timeout": timeout, "allowed_updates": ["message", "callback_query"]}

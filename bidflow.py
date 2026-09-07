@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 from typing import Any
 
@@ -15,6 +16,13 @@ from tools.applicant import NEEDS_INPUT, answer_question, parse_applicant
 from tools.apply import METHOD_ATS, METHOD_EMAIL, METHOD_MANUAL, gather_requirements
 from tools.fetch import hydrate
 from tools.letter import generate_letter, revise_letter
+from tools.resume import (
+    describe_selection,
+    output_path,
+    parse_career_database,
+    render_pdf,
+    select_content,
+)
 from tools.profile import read_profile
 from tools.store import (
     APPLIED_STATUSES,
@@ -112,17 +120,45 @@ def start_bid(posting_id: str) -> dict[str, Any]:
     if not letter:
         return {"error": "The model could not be reached to write the cover letter. Try again."}
 
+    resume_path, resume_note = build_resume(posting)
+
     draft = {
         "posting": posting,
         "requirements": requirements,
         "applicant": applicant,
         "answers": answers,
         "letter": letter,
+        "resume_path": resume_path,
+        "resume_note": resume_note,
         "awaiting_edit": False,
     }
     _store_draft(posting_id, draft)
     set_status(posting_id, STATUS_BIDDING)
     return draft
+
+
+def build_resume(posting: dict[str, Any]) -> tuple[str, str]:
+    """Build the tailored résumé for a posting.
+
+    Returns (path, explanation). On any failure the path falls back to the
+    static résumé from applicant.md, and the explanation says so — a résumé
+    problem must never block an application.
+    """
+    static = parse_applicant().get("fields", {}).get("resume_path", "")
+    try:
+        db = parse_career_database()
+        if not db.get("projects"):
+            return static, "static résumé (the career database has no projects to select from)"
+        selection = select_content(posting, db)
+        path = render_pdf(selection, db, output_path(posting))
+        note = selection.get("reason") or describe_selection(selection, db)
+        logger.info("Tailored résumé for %s: %s", posting.get("id"), path)
+        return path, note
+    except Exception as exc:  # noqa: BLE001 - fall back rather than block the bid
+        logger.error("Résumé generation failed for %s: %s", posting.get("id"), exc)
+        if static and os.path.isfile(static):
+            return static, f"static résumé (tailored generation failed: {exc})"
+        return "", f"no résumé available (generation failed: {exc})"
 
 
 def revise(posting_id: str, instruction: str) -> dict[str, Any]:
@@ -186,14 +222,15 @@ def render_draft(draft: dict[str, Any]) -> str:
         elif key in ("github", "portfolio"):
             lines.append(f"{label}: {NEEDS_INPUT} (add it to applicant.md)")
 
-    resume_path = fields.get("resume_path", "")
-    if resume_path:
-        import os
-
-        if os.path.isfile(resume_path):
-            lines.append(f"Résumé: attached ({os.path.basename(resume_path)})")
-        else:
-            lines.append(f"Résumé: {NEEDS_INPUT} — {resume_path} not found, nothing will be attached")
+    resume_path = draft.get("resume_path") or fields.get("resume_path", "")
+    if resume_path and os.path.isfile(resume_path):
+        note = draft.get("resume_note", "")
+        lines.append(f"Résumé: {note}" if note else f"Résumé: attached ({os.path.basename(resume_path)})")
+        lines.append(f"         {os.path.basename(resume_path)}")
+    elif resume_path:
+        lines.append(f"Résumé: {NEEDS_INPUT} — {resume_path} not found, nothing will be attached")
+    else:
+        lines.append(f"Résumé: {NEEDS_INPUT} — no résumé available")
 
     if draft["answers"]:
         lines.append("")
@@ -229,6 +266,15 @@ def confirm_and_submit(posting_id: str) -> tuple[str, str]:
     posting, requirements = draft["posting"], draft["requirements"]
     applicant, letter = draft["applicant"], draft["letter"]
     method = requirements["method"]
+
+    # The tailored résumé is built during the draft so it can be reviewed; if it
+    # is missing by now, rebuild it rather than falling back silently.
+    resume_path = draft.get("resume_path", "")
+    if not resume_path or not os.path.isfile(resume_path):
+        resume_path, _ = build_resume(posting)
+    applicant = {**applicant, "fields": {**applicant.get("fields", {})}}
+    if resume_path:
+        applicant["fields"]["resume_path"] = resume_path
 
     if method == METHOD_EMAIL:
         sent, detail = send_email_application(posting, applicant, letter, requirements["email"])
