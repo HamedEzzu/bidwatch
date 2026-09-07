@@ -305,12 +305,18 @@ def confirm_and_submit(posting_id: str) -> tuple[str, str]:
     return "applied_manual", handoff
 
 
-def fill_form(posting_id: str) -> tuple[bool, str]:
+def fill_form(posting_id: str, override_url: str = "") -> tuple[bool, str]:
     """Open the application page in a visible browser with the form filled in.
 
     Returns (opened, message). Nothing is ever submitted: on success the user
     is handed a filled form to review; on failure they get the manual handoff
     so there is always a path forward.
+
+    Args:
+        posting_id: The posting whose draft is being applied.
+        override_url: An application URL supplied by the user, used instead of
+            the one BidWatch found — job boards often reveal the employer's
+            form only after a signed-in click the user makes themselves.
     """
     draft = get_draft(posting_id)
     if not draft:
@@ -325,6 +331,7 @@ def fill_form(posting_id: str) -> tuple[bool, str]:
         posting,
         {
             "apply_url": requirements.get("apply_url") or posting.get("url", ""),
+            "override_url": override_url,
             "applicant": draft["applicant"],
             "letter": draft["letter"],
             "answers": draft.get("answers", {}),

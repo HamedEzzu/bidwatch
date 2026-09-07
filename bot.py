@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import sys
 import time
 from typing import Any
@@ -183,8 +184,26 @@ def handle_message(message: dict[str, Any]) -> None:
             send_message(
                 "BidWatch is listening. Job alerts arrive here with Bid / Open / Skip buttons.\n"
                 "Tap Bid to prepare an application; nothing is ever sent without your "
-                "explicit Confirm & Submit."
+                "explicit Confirm & Submit.\n\n"
+                "If a job board hides the employer's form behind its own Apply button, click it "
+                "yourself and send me:  fill <url>"
             )
+        return
+
+    # "fill <url>" applies to whichever draft is active: job boards hand out the
+    # employer's form only after a click the user makes themselves.
+    fill_match = re.match(r"(?:fill|form)\s+(https?://\S+)", text, re.I)
+    if fill_match:
+        active = bidflow.active_draft_ids()
+        if not active:
+            send_message("No application is in progress. Tap Bid on a job first.")
+            return
+        posting_id = active[-1]
+        send_message(f"Opening that page and filling it in for {posting_id}…")
+        opened, message = bidflow.fill_form(posting_id, override_url=fill_match.group(1))
+        send_long(message)
+        if opened:
+            send_message("Review it in the browser, then submit it yourself. BidWatch never clicks submit.")
         return
 
     posting_id = bidflow.awaiting_edit_id()

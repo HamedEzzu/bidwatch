@@ -34,12 +34,18 @@ COVER_LETTER_MAX_WORDS = int(os.getenv("COVER_LETTER_MAX_WORDS", "220"))
 # headless fill is pointless, since the whole feature hands you the window.
 HEADED_BROWSER = os.getenv("HEADED_BROWSER", "true").strip().lower() in ("1", "true", "yes", "on")
 
+
 # --- Paths -----------------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROFILE_PATH = os.path.join(BASE_DIR, "profile.md")
 APPLICANT_PATH = os.path.join(BASE_DIR, "applicant.md")
 DB_PATH = os.path.join(BASE_DIR, "bidwatch.db")
 FIXTURE_PATH = os.path.join(BASE_DIR, "fixtures", "sample_postings.json")
+
+# The form-filling browser keeps its own profile, so a site you sign into once
+# (Remote OK only reveals employer apply links to signed-in accounts) stays
+# signed in for later runs. Gitignored: it holds cookies.
+BROWSER_PROFILE_DIR = os.getenv("BROWSER_PROFILE_DIR", os.path.join(BASE_DIR, ".browser_profile"))
 
 # Descriptions are truncated before reaching the model to control token cost.
 MAX_DESCRIPTION_CHARS = 2000

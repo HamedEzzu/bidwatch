@@ -22,7 +22,7 @@ import re
 import threading
 from typing import Any
 
-from config import HEADED_BROWSER
+from config import BROWSER_PROFILE_DIR, HEADED_BROWSER
 from tools.applicant import NEEDS_INPUT
 from tools.llm import complete
 
@@ -105,6 +105,15 @@ ATS_SELECTORS: dict[str, dict[str, str]] = {
     },
 }
 
+#: Inputs that belong to a site's chrome, not to an application form. Job
+#: boards are full of these, and filling one puts your phone number into a
+#: search box.
+JUNK_FIELD_MARKERS = (
+    "search", "query", "keyword", "filter", "subscribe", "newsletter",
+    "login", "signin", "sign in", "password", "coupon", "promo", "discount",
+    "csrf", "captcha", "consent", "cookie", "currency", "sort",
+)
+
 _WORD_RE = re.compile(r"[^a-z0-9]+")
 
 
@@ -152,11 +161,28 @@ def applicant_values(applicant: dict[str, Any], letter: str, answers: dict[str, 
 
 # --- matching --------------------------------------------------------------
 
-def describe_fields(raw_fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Normalize raw DOM field data into descriptors used by the matcher."""
+def is_junk_field(descriptor: dict[str, Any]) -> bool:
+    """True for site chrome — search boxes, newsletter signups, login fields."""
+    if descriptor.get("type") in ("search", "password", "checkbox", "radio", "range", "color"):
+        return descriptor.get("type") in ("search", "password")
+    haystack = " ".join([
+        descriptor.get("name", ""), descriptor.get("id", ""), descriptor.get("label", ""),
+        descriptor.get("placeholder", ""), descriptor.get("aria", ""),
+    ]).lower()
+    if any(marker in haystack for marker in JUNK_FIELD_MARKERS):
+        return True
+    return bool(descriptor.get("in_chrome"))
+
+
+def describe_fields(raw_fields: list[dict[str, Any]], drop_junk: bool = True) -> list[dict[str, Any]]:
+    """Normalize raw DOM field data into descriptors used by the matcher.
+
+    Site chrome (search, login, newsletter) is dropped by default: those are
+    not part of the application, and filling them is worse than useless.
+    """
     descriptors = []
     for index, field in enumerate(raw_fields):
-        descriptors.append({
+        descriptor = {
             "index": field.get("index", index),
             "tag": (field.get("tag") or "input").lower(),
             "type": (field.get("type") or "text").lower(),
@@ -167,8 +193,30 @@ def describe_fields(raw_fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "aria": field.get("aria") or "",
             "required": bool(field.get("required")),
             "selector": field.get("selector") or "",
-        })
+            "in_chrome": bool(field.get("in_chrome")),
+        }
+        if drop_junk and is_junk_field(descriptor):
+            logger.debug("Ignoring site-chrome field: %s", descriptor.get("name") or descriptor.get("label"))
+            continue
+        descriptors.append(descriptor)
     return descriptors
+
+
+def looks_like_application_form(descriptors: list[dict[str, Any]], form_count: int) -> bool:
+    """Is this page actually an application form, or just a page with inputs?
+
+    A job board's listing page has dozens of inputs and no form worth filling.
+    Requiring real evidence — an actual <form>, a file upload, or a free-text
+    area — stops BidWatch typing into a search box and calling it an application.
+    """
+    if not descriptors:
+        return False
+    has_upload = any(d["type"] == "file" for d in descriptors)
+    has_textarea = any(d["tag"] == "textarea" for d in descriptors)
+    identifiable = sum(1 for d in descriptors if match_by_attribute(d) or match_by_label(d))
+    if form_count == 0 and not has_upload and not has_textarea:
+        return False
+    return has_upload or has_textarea or identifiable >= 3
 
 
 def field_text(descriptor: dict[str, Any]) -> str:
@@ -332,11 +380,24 @@ def format_report(posting: dict[str, Any], result: dict[str, Any]) -> str:
     else:
         lines.append("⚠️ Nothing could be filled automatically.")
 
-    for item in result.get("unmatched", []):
-        if not item.get("required"):
-            lines.append(f'⚠️ Could not match: "{item["label"]}"')
+    # Only fields a human could recognise are worth listing; a wall of
+    # "unnamed field" tells the reader nothing.
+    named = [
+        item for item in result.get("unmatched", [])
+        if not item.get("required") and item.get("label") and item["label"] != "unnamed field"
+    ]
+    seen: set[str] = set()
+    for item in named[:6]:
+        if item["label"] in seen:
+            continue
+        seen.add(item["label"])
+        lines.append(f'⚠️ Could not match: "{item["label"]}"')
+    remaining = len(result.get("unmatched", [])) - len(seen)
+    if remaining > 0:
+        lines.append(f"⚠️ {remaining} other field(s) left blank.")
     for item in result.get("required_blank", []):
-        lines.append(f'⚠️ Left blank (looks required): "{item["label"]}"')
+        label = item.get("label") or "an unlabelled field"
+        lines.append(f'⚠️ Left blank (looks required): "{label}"')
 
     lines.append("")
     lines.append("Nothing was submitted. Review every field in the browser window, then submit it yourself.")
@@ -377,6 +438,7 @@ _COLLECT_FIELDS_JS = """
       }
     }
     el.setAttribute('data-bidwatch-field', String(i));
+    const chrome = el.closest('nav, header, footer, [role="search"], [role="navigation"], form[role="search"]');
     out.push({
       index: i,
       tag: el.tagName.toLowerCase(),
@@ -387,6 +449,7 @@ _COLLECT_FIELDS_JS = """
       placeholder: el.placeholder || '',
       aria: el.getAttribute('aria-label') || '',
       required: el.required || el.getAttribute('aria-required') === 'true',
+      in_chrome: !!chrome,
       selector: `[data-bidwatch-field="${i}"]`
     });
   });
@@ -412,6 +475,84 @@ _BANNER_JS = """
   window.scrollTo(0, 0);
 }
 """
+
+
+_APPLY_LINK_JS = """
+() => {
+  const links = Array.from(document.querySelectorAll('a[href]'));
+  const apply = links.find(a => /^\\s*apply\\b/i.test(a.innerText || ''));
+  return apply ? apply.href : null;
+}
+"""
+
+#: A landing page that is asking the user to sign in rather than to apply.
+SIGN_IN_MARKERS = ("sign-up", "signup", "sign_up", "/login", "sign-in", "signin", "register")
+
+
+def looks_like_sign_in_wall(url: str) -> bool:
+    return any(marker in (url or "").lower() for marker in SIGN_IN_MARKERS)
+
+
+#: Boards whose listing page is not an application form.
+JOB_BOARD_HOSTS = ("remoteok.com", "remoteok.io", "weworkremotely.com", "indeed.com", "linkedin.com")
+
+
+def _host(url: str) -> str:
+    match = re.match(r"https?://([^/]+)", url or "", re.I)
+    return (match.group(1) if match else "").lower().replace("www.", "")
+
+
+def _click_apply_anchor(page: Any) -> Any:
+    """Click the listing's Apply LINK and return the page it opens.
+
+    Boards hand out the employer URL only to a real click (it carries a user
+    gesture and a referrer), so navigation alone bounces back. This clicks an
+    <a href> and nothing else: the locator is asserted to be an anchor, so it
+    can never reach a submit button. Returns the popup page, or None.
+    """
+    # Listings repeat the Apply link many times, mostly hidden; a hidden one
+    # would stall the click until it timed out.
+    anchor = page.locator("a[href]:visible").filter(has_text=re.compile(r"^\s*apply\b", re.I)).first
+    try:
+        if anchor.count() == 0:
+            return None
+        tag = anchor.evaluate("el => el.tagName.toLowerCase()")
+        kind = anchor.evaluate("el => (el.getAttribute('type') || '').toLowerCase()")
+        if tag != "a" or kind == "submit":
+            logger.warning("Refusing to click a non-anchor apply control (<%s type=%s>)", tag, kind)
+            return None
+        with page.context.expect_page(timeout=15000) as popup:
+            anchor.click(timeout=8000)   # navigation only; asserted to be a link above
+        opened = popup.value
+        opened.wait_for_load_state("domcontentloaded", timeout=30000)
+        opened.wait_for_timeout(2500)
+        return opened
+    except Exception as exc:  # noqa: BLE001 - no popup is a normal outcome
+        logger.info("Apply link did not open a new page: %s", exc)
+        return None
+
+
+def follow_apply_link(page: Any) -> str:
+    """From a job-board listing, navigate to the employer's application page.
+
+    Returns the URL landed on. Boards often gate this link — Remote OK's
+    /l/<id> bounces straight back to the listing — in which case the caller
+    sees the host is unchanged and reports honestly instead of filling the
+    board's own search box.
+    """
+    try:
+        href = page.evaluate(_APPLY_LINK_JS)
+    except Exception:  # noqa: BLE001
+        return page.url
+    if not href:
+        return page.url
+    logger.info("Following the listing's apply link: %s", href)
+    try:
+        page.goto(href, wait_until="domcontentloaded", timeout=45000)
+        page.wait_for_timeout(2500)
+    except Exception as exc:  # noqa: BLE001 - stay on the listing if it fails
+        logger.warning("Could not follow the apply link: %s", exc)
+    return page.url
 
 
 def _detect_provider(url: str) -> str | None:
@@ -446,7 +587,7 @@ def open_prefilled_application(
     except (json.JSONDecodeError, TypeError):
         return {"error": "The posting could not be read.", "fills": [], "unmatched": [], "required_blank": []}
 
-    url = application_data.get("apply_url") or posting.get("url", "")
+    url = application_data.get("override_url") or application_data.get("apply_url") or posting.get("url", "")
     if not url:
         return {"error": "No application URL is known for this posting.", "fills": [], "unmatched": [], "required_blank": []}
 
@@ -487,20 +628,61 @@ def _drive_browser(url: str, values: dict[str, str], resume_path: str, outcome: 
 
     try:
         playwright = sync_playwright().start()
-        browser = playwright.chromium.launch(headless=not HEADED_BROWSER)
-        page = browser.new_page(viewport={"width": 1280, "height": 900})
+        os.makedirs(BROWSER_PROFILE_DIR, exist_ok=True)
+        # A persistent profile keeps cookies between runs, so signing in to a
+        # job board once is enough for later applications.
+        browser = playwright.chromium.launch_persistent_context(
+            BROWSER_PROFILE_DIR,
+            headless=not HEADED_BROWSER,
+            viewport={"width": 1280, "height": 900},
+            user_agent=(
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+        )
+        page = browser.pages[0] if browser.pages else browser.new_page()
         page.goto(url, wait_until="domcontentloaded", timeout=45000)
         try:
             page.wait_for_load_state("networkidle", timeout=10000)
         except Exception:  # noqa: BLE001 - a chatty page is not a failure
             pass
 
+        # A board listing is not an application form; follow its Apply link.
+        if _host(page.url) in JOB_BOARD_HOSTS:
+            opened = _click_apply_anchor(page)
+            if opened is not None:
+                page = opened
+            elif _host(follow_apply_link(page)) in JOB_BOARD_HOSTS:
+                pass  # still on the board; handled below
+
+            if looks_like_sign_in_wall(page.url):
+                report["error"] = (
+                    f"{_host(url)} wants you signed in before it will show the employer's "
+                    "application page. The browser window is open on its sign-in page and keeps "
+                    "its own profile — sign in once there, then tap Fill form again and it will "
+                    "go straight through next time."
+                )
+                _finish(report, outcome)
+                _park(page, browser, playwright)
+                return
+
+            if _host(page.url) in JOB_BOARD_HOSTS:
+                report["error"] = (
+                    f"This is the {_host(page.url)} listing, not the employer's application form. "
+                    "The browser is open on it: click Apply yourself, copy the URL of the page that "
+                    "opens, and send it to me as: fill <url>"
+                )
+                _finish(report, outcome)
+                _park(page, browser, playwright)
+                return
+
         raw_fields = page.evaluate(_COLLECT_FIELDS_JS)
+        form_count = page.evaluate("() => document.querySelectorAll('form').length")
         descriptors = describe_fields(raw_fields)
-        if not descriptors:
+        if not looks_like_application_form(descriptors, form_count):
             report["error"] = (
-                "No form fields were found on the page — it may be login-gated, rendered in an "
-                "iframe, or blocking automation."
+                "No application form was found on this page — it may be login-gated, inside an "
+                "iframe, or blocking automation. Nothing was filled."
             )
             _finish(report, outcome)
             _park(page, browser, playwright)

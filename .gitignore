@@ -16,3 +16,6 @@ applicant.md
 
 # Tailored resumes are generated per application
 generated_resumes/
+
+# Browser profile for assisted form filling (holds cookies)
+.browser_profile/

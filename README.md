@@ -166,6 +166,24 @@ postings. The model layer can only choose among values that actually exist in
 because a wrong answer on a job application is worse than an empty box. Every mapping
 decision is logged with the layer that made it, so a bad fill is diagnosable.
 
+**Job boards are not application forms, and BidWatch knows the difference.** A Remote
+OK listing has fifty-odd inputs — search, filters, newsletter signup — and no employer
+form at all. Site chrome is discarded before matching, and a page is only treated as an
+application if it has a real `<form>`, a file upload, a free-text area, or at least three
+identifiable fields. Otherwise nothing is filled and you are told why.
+
+**Signing in once makes boards work.** Remote OK only reveals the employer's apply link
+to a signed-in account, so BidWatch's browser keeps its own profile in
+`.browser_profile/` (gitignored — it holds cookies). Sign in once in that window and
+later applications go straight through to the employer's form. If a board still won't
+hand it over, click Apply yourself and send the bot:
+
+```
+fill https://boards.greenhouse.io/employer/jobs/12345
+```
+
+It fills that page for whichever application is in progress.
+
 If the page won't load, the form isn't detectable, or the site blocks automation, you
 get the manual handoff instead — the apply URL, the letter, and the résumé — with an
 explanation of what went wrong. There is always a path forward.
@@ -433,6 +451,7 @@ All in [`config.py`](config.py), each overridable by an environment variable.
 | `MAX_POSTINGS_PER_RUN` | `MAX_POSTINGS_PER_RUN` | `15` | Hard cap on postings scored per run. |
 | `MAX_SUBMISSIONS_PER_HOUR` | `MAX_SUBMISSIONS_PER_HOUR` | `5` | Ceiling on confirmed applications per rolling hour. |
 | `HEADED_BROWSER` | `HEADED_BROWSER` | `true` | Open a visible browser for form filling. Needs a desktop session. |
+| `BROWSER_PROFILE_DIR` | `BROWSER_PROFILE_DIR` | `.browser_profile` | Where the form-filling browser keeps cookies, so a board sign-in persists. |
 | `RUN_INTERVAL_MINUTES` | `RUN_INTERVAL_MINUTES` | `30` | Scheduled interval (floored at 15). |
 | `MAX_DESCRIPTION_CHARS` | — | `2000` | Truncation before the model sees a description. |
 
@@ -562,8 +581,11 @@ usage is logged after every run.
   page yields nothing useful, you get a shorter message rather than a plausible
   invention.
 - **Form filling needs a desktop session.** It opens a real window by design; it cannot
-  work on a headless server, and it will not fill forms behind a login wall or inside a
-  cross-origin iframe.
+  work on a headless server, and it will not fill forms inside a cross-origin iframe.
+- **Remote OK will not give the employer's apply URL to automation.** Its Apply button
+  redirects to a sign-up page. Sign in once in BidWatch's browser profile, or click
+  Apply yourself and send `fill <url>`. This is the board's policy, not a bug BidWatch
+  can code around.
 - **The listener is long-polling, not a webhook.** Simple to run anywhere, but it must
   be running for buttons to respond.
 

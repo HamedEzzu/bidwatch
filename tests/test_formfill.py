@@ -229,12 +229,73 @@ def test_malformed_posting_is_reported():
 # --- the one rule that matters ---------------------------------------------
 
 def test_the_module_contains_no_way_to_submit_a_form():
-    """A regression guard: nothing here may click, submit, or press Enter."""
+    """The rule that matters: nothing here may submit an application.
+
+    One click is permitted — the listing's "Apply" anchor, which is navigation,
+    not submission — and only inside `_click_apply_anchor`, which proves the
+    element is an <a> and refuses anything of type=submit. Everything else that
+    could submit a form is banned outright.
+    """
     import re
 
     with open(formfill.__file__, encoding="utf-8") as handle:
         source = handle.read()
-    for line in source.splitlines():
+
+    lines = source.splitlines()
+    allowed_start = next(i for i, l in enumerate(lines) if l.startswith("def _click_apply_anchor"))
+    allowed_end = next(i for i, l in enumerate(lines[allowed_start + 1:], allowed_start + 1)
+                       if l.startswith("def "))
+
+    for number, line in enumerate(lines):
         if line.strip().startswith("#") or '"""' in line:
             continue
-        assert not re.search(r"\.click\(|\.submit\(\)|press\(['\"]Enter", line), f"submit path found: {line!r}"
+        assert not re.search(r"\.submit\(\)|press\(['\"]Enter|keyboard\.press", line), \
+            f"submit path found on line {number + 1}: {line!r}"
+        if re.search(r"\.click\(", line):
+            assert allowed_start < number < allowed_end, \
+                f"click outside the apply-anchor helper on line {number + 1}: {line!r}"
+
+
+def test_the_apply_click_refuses_anything_that_is_not_a_link():
+    """A submit button dressed up as "Apply" must never be clicked."""
+    source = open(formfill.__file__, encoding="utf-8").read()
+    body = source.split("def _click_apply_anchor")[1].split("\ndef ")[0]
+    assert 'tag != "a"' in body and 'kind == "submit"' in body
+    assert "a[href]" in body
+
+
+def test_sign_in_walls_are_recognised():
+    assert formfill.looks_like_sign_in_wall("https://remoteok.com/sign-up?user_type=worker")
+    assert formfill.looks_like_sign_in_wall("https://x.com/login?next=/apply")
+    assert not formfill.looks_like_sign_in_wall("https://boards.greenhouse.io/acme/jobs/1")
+
+
+def test_job_board_listings_are_not_treated_as_application_forms():
+    """The bug this fixes: a Remote OK listing has 50+ search and nav inputs."""
+    listing_fields = [{"index": i, "name": f"filter_{i}", "in_chrome": i % 2 == 0} for i in range(50)]
+    listing_fields.append({"index": 99, "type": "search", "placeholder": "🔍 Search"})
+    descriptors = formfill.describe_fields(listing_fields)
+    assert formfill.looks_like_application_form(descriptors, form_count=0) is False
+
+
+def test_search_and_chrome_inputs_are_never_filled():
+    kept = formfill.describe_fields([
+        {"index": 0, "type": "search", "placeholder": "🔍 Search"},
+        {"index": 1, "name": "newsletter_email", "label": "Subscribe"},
+        {"index": 2, "name": "nav_query", "in_chrome": True},
+        {"index": 3, "name": "email", "label": "Email address"},
+    ])
+    assert [d["name"] for d in kept] == ["email"]
+
+
+def test_report_does_not_list_walls_of_unnamed_fields():
+    report = formfill.format_report(
+        {"company": "Acme"},
+        {"fills": [{"field": "email"}],
+         "unmatched": [{"label": "unnamed field", "required": False} for _ in range(40)]
+                      + [{"label": "Portfolio URL", "required": False}],
+         "required_blank": []},
+    )
+    assert report.count("unnamed field") == 0
+    assert '⚠️ Could not match: "Portfolio URL"' in report
+    assert "other field(s) left blank" in report

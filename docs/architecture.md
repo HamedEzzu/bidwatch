@@ -73,9 +73,19 @@ flowchart TD
     AT -->|token missing or schema mismatch| MH
     S -->|manual| MH[Hand back apply URL, letter and fields] --> OK3([applied_manual])
 
-    D -->|Fill form in browser| FF[Playwright: open a visible window]
-    FF --> DET[Detect fields: labels, name/id, placeholder, aria]
-    DET --> MAP[Match: ATS selectors, then attributes, then labels, then the model]
+    D -->|Fill form in browser| FF[Playwright: open a visible window, persistent profile]
+    FF --> BOARD{Is this a job-board listing?}
+    BOARD -->|yes| AP[Click its Apply link]
+    AP -->|sign-in wall| SI([Sign in once; the profile remembers])
+    AP -->|still on the board| ASK([Click Apply yourself, then send: fill URL])
+    BOARD -->|no| DET
+    AP -->|employer page| DET
+    DET --> CHROME[Discard search, login and newsletter inputs]
+    CHROME --> ISFORM{Real application form?}
+    ISFORM -->|no| ASK
+    ISFORM -->|yes| MAP2[ ]
+    DET2[Detect fields: labels, name/id, placeholder, aria]
+    MAP2 --> MAP[Match: ATS selectors, then attributes, then labels, then the model]
     MAP --> FILL[Fill fields, upload the tailored résumé, inject the review banner]
     FILL --> HAND([Browser handed to the user — never submitted])
     FF -.->|page blocked or no form found| MH
