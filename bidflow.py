@@ -6,6 +6,7 @@ State is held per posting id, so two bids in progress never collide.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from typing import Any
@@ -53,23 +54,34 @@ def active_draft_ids() -> list[str]:
 
 
 def resolve_posting(posting_id: str) -> dict[str, Any] | None:
-    """Find a posting by id: the in-process cache first, then the store."""
+    """Find a posting by id: the in-process cache first, then the store.
+
+    The store fallback matters: bot.py runs as a separate process from the
+    scheduler, so a button tap has none of the scanner's in-memory postings.
+    The full posting — description included — is persisted for exactly this,
+    otherwise the cover letter would be written from the job title alone.
+    """
     posting = hydrate({"id": str(posting_id)})
-    if posting.get("title"):
+    if posting.get("description"):
         return posting
     record = get_posting_record(posting_id)
     if not record:
-        return None
+        return posting if posting.get("title") else None
+
+    try:
+        tags = json.loads(record.get("tags") or "[]")
+    except (json.JSONDecodeError, TypeError):
+        tags = []
     return {
         "id": record["id"],
         "title": record.get("title", ""),
         "company": record.get("company", ""),
         "url": record.get("url", ""),
-        "description": "",
-        "tags": [],
-        "location": "",
-        "salary_min": None,
-        "salary_max": None,
+        "description": record.get("description") or "",
+        "tags": tags,
+        "location": record.get("location") or "",
+        "salary_min": record.get("salary_min"),
+        "salary_max": record.get("salary_max"),
         "posted_at": "",
     }
 

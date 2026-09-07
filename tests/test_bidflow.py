@@ -153,3 +153,17 @@ def test_already_applied_posting_is_not_sent_twice(wired, monkeypatch):
 
     status, detail = bidflow.confirm_and_submit("1000001")
     assert status == "failed"
+
+
+def test_bid_from_a_separate_process_still_has_the_description(wired, monkeypatch):
+    """bot.py runs in its own process, with none of the scanner's memory."""
+    from tools import fetch as fetch_mod
+
+    # Simulate the listener process: nothing in the in-memory posting cache.
+    monkeypatch.setattr(fetch_mod, "_POSTING_CACHE", {})
+    posting = bidflow.resolve_posting("1000001")
+    assert posting is not None
+    assert posting["title"] == "Senior Python Backend Engineer"
+    # The description is what the cover letter is written from.
+    assert "FastAPI" in posting["description"]
+    assert posting["tags"] and posting["salary_min"] == 40000

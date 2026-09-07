@@ -11,6 +11,7 @@ applied to or dismissed can resurface on a later run.
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -55,6 +56,13 @@ def _connect(db_path: str = DB_PATH) -> sqlite3.Connection:
         ("notified_at", "ALTER TABLE seen_postings ADD COLUMN notified_at TEXT"),
         ("applied_at", "ALTER TABLE seen_postings ADD COLUMN applied_at TEXT"),
         ("cover_letter", "ALTER TABLE seen_postings ADD COLUMN cover_letter TEXT"),
+        # The full posting is persisted so a separate process (bot.py) can
+        # write a letter against the real description, not just the title.
+        ("description", "ALTER TABLE seen_postings ADD COLUMN description TEXT"),
+        ("tags", "ALTER TABLE seen_postings ADD COLUMN tags TEXT"),
+        ("location", "ALTER TABLE seen_postings ADD COLUMN location TEXT"),
+        ("salary_min", "ALTER TABLE seen_postings ADD COLUMN salary_min INTEGER"),
+        ("salary_max", "ALTER TABLE seen_postings ADD COLUMN salary_max INTEGER"),
     ):
         if column not in existing:
             conn.execute(ddl)
@@ -94,10 +102,15 @@ def filter_new(postings: list[dict[str, Any]], db_path: str = DB_PATH) -> list[d
                 known.add(pid)
                 fresh.append(posting)
                 conn.execute(
-                    "INSERT OR IGNORE INTO seen_postings (id, title, company, url, status, seen_at)"
-                    " VALUES (?, ?, ?, ?, ?, ?)",
+                    "INSERT OR IGNORE INTO seen_postings"
+                    " (id, title, company, url, status, seen_at, description, tags,"
+                    "  location, salary_min, salary_max)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (pid, posting.get("title", ""), posting.get("company", ""),
-                     posting.get("url", ""), STATUS_NEW, _now()),
+                     posting.get("url", ""), STATUS_NEW, _now(),
+                     posting.get("description", ""), json.dumps(posting.get("tags", [])),
+                     posting.get("location", ""), posting.get("salary_min"),
+                     posting.get("salary_max")),
                 )
     except sqlite3.Error as exc:
         logger.error("Posting store write failed: %s", exc)
