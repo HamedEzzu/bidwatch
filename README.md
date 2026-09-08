@@ -29,18 +29,16 @@ On every run:
 4. **Scores** each new posting 0–100 for fit, with a one-line rationale.
 5. **Notifies** you once per qualifying posting — highest score first — with a short,
    scannable card and **Bid / Open / Skip** buttons, then one closing summary line.
-6. **Prepares the application** when you tap Bid: it reads the listing page, works out
-   how to apply, fills in your details, writes a tailored cover letter, and shows you
-   the whole thing for review.
-7. **Submits only when you tap Confirm.**
+6. **Prepares the application** when you tap Bid: a résumé tailored to that posting, a
+   cover letter in your voice, and your details laid out for pasting.
+7. **Stops there.** You review, you submit.
 
 If nothing qualifies, it sends nothing at all — no summary, no "no jobs found".
 
-> **Product principle, enforced in code, not just in the prompt: nothing is ever sent
-> without your explicit confirmation.** The scanning agent has no tool that can contact
-> an employer — its only outbound channel is a notification to you. Submission lives in
-> a separate path that runs only after a `Confirm & Submit` tap. There is no timeout
-> that auto-confirms and no implicit approval.
+> **Product principle, enforced in code rather than in a prompt: BidWatch cannot
+> contact an employer.** Its only outbound channel is a notification to you. There is
+> no mail path, no form submission, no browser automation — not disabled, not gated
+> behind a confirmation, but absent.
 
 ### The notification
 
@@ -61,31 +59,55 @@ than invented. **Salary** disappears entirely when the listing doesn't publish o
 (most don't); you will never see "N/A". The full description and the cover letter stay
 out of the alert — they belong in the bid flow, not the notification.
 
-### The bid flow
+### The application package
 
-Tapping **Bid** runs four steps, and stops before the fifth until you confirm:
+Tapping **Bid** prepares everything an application needs, and hands it to you:
 
-1. **Gather** — fetches the listing page and classifies how to apply: an
-   **email** address found in the posting, a **known ATS** (Greenhouse, Lever, Ashby,
-   Workable), or **manual** for custom forms and login-gated pages. It also collects
-   the fields and any screening questions the page asks.
-2. **Fill** — populates everything from `applicant.md`, writes a cover letter tailored
-   to that posting in the voice from `profile.md`, and **builds a résumé selected for
-   this job** (see below). A screening question that `applicant.md` can't answer is
-   marked `⚠️ NEEDS YOUR INPUT` rather than guessed at.
-3. **Review** — the complete filled application comes back in chat, with
-   **Confirm & Submit** · **Edit letter** · **View résumé** · **Cancel**, plus
-   **Fill form in browser** on manual and ATS jobs.
-4. **Edit** — reply in plain language ("make it shorter", "less formal", "mention the
-   WebSockets project") and the letter is rewritten and re-shown. Loop as long as you
-   like. Each job's draft is kept separately, so two bids in progress never collide.
-5. **Submit** — only on `Confirm & Submit`:
+1. **A job-tailored résumé**, as a PDF in the chat, with a one-line note on which
+   variant was built and why.
+2. **A cover letter** in your voice, in a copy block — one tap to copy.
+3. **A field sheet**: every value a form asks for, one per line, ready to paste.
+4. **The apply link**, as a button.
 
-| Path | What happens |
-|---|---|
-| `email` | Sent over SMTP: letter as the body, the **tailored** résumé attached, subject naming the role. |
-| `known_ats` | Attempts the provider's application endpoint. Most boards require a per-employer token this project doesn't hold — when that happens it falls back to the manual path **and says so**. |
-| `manual` | Hands you the apply URL, the finished letter in a copy-friendly block, every field ready to paste, and the tailored résumé sent to your chat to upload. |
+```
+Full name: Hamed Youssef Ezzu
+Email: hamed.y.ezzu@gmail.com
+Phone: +218 91 006 2163
+Location: Tripoli, Libya (remote, UTC+2)
+LinkedIn: linkedin.com/in/hamed-ezzu
+GitHub: github.com/HamedEzzu
+Portfolio: hamed-ezzu-portfolio.vercel.app
+Availability: Part-time now; flexible hours
+Salary expectation: $15–25/hour, negotiable for a first project
+Work authorization: Independent contractor, remote only
+Languages: Arabic (native), English (professional)
+```
+
+Two buttons follow: **Edit letter** — reply in plain language ("make it shorter",
+"mention the WebSockets project") and it is rewritten and re-sent, as many times as
+you like — and **Mark as applied**, which timestamps the job, keeps the letter and
+résumé as a record, and stops it resurfacing.
+
+### Why BidWatch does not submit for you
+
+**BidWatch finds, scores and prepares. You review and submit.** That is a design
+decision, not a missing feature.
+
+Automated submission was built and then deliberately removed. It could send email and
+post to a couple of ATS providers, and it could drive a real browser to fill a form —
+but employer application flows are gated in ways that cannot be automated reliably.
+Job boards hide the employer's URL behind their own sign-in; ATS providers want a
+per-employer token; forms sit behind logins, iframes and bot detection. What that
+produces is a feature that works sometimes, in ways you cannot predict, on the one
+thing where a silent failure is expensive: your name in front of a real employer.
+
+A human-in-the-loop final step is the correct design here. BidWatch does the twenty
+minutes of searching, scoring and writing. You do the thirty seconds of reviewing and
+submitting — and you keep the judgement about what goes out under your name.
+
+The guarantee is structural, not a promise: there is no code in this project that can
+send mail, submit a form, or contact an employer. A test asserts it across every
+module, so it stays that way.
 
 ### Tailored résumé generation
 
@@ -124,89 +146,6 @@ the actual PDF to your chat so you can read it before confirming. On the manual 
 the file is sent to the chat too, so you can upload it to their form in seconds. If
 generation fails for any reason, the static `My_Resume.pdf` from `applicant.md` is
 attached instead and the draft says so — a résumé problem never blocks an application.
-
-### Assisted form filling
-
-Most job applications are a web form nobody can post to programmatically. For those,
-BidWatch opens the page in a **real, visible browser**, fills in everything it can, and
-hands you the window.
-
-Tap **🖊 Fill form in browser** on a manual or ATS job (the button doesn't appear on
-email jobs — that path already submits properly) and BidWatch will:
-
-1. Open the application URL in a visible Chromium window.
-2. Read every field on the page — labels, `name`/`id`, placeholders, `aria-label`.
-3. Match fields to your data in three layers: **exact attribute** names first, then
-   **fuzzy label** matching, then the **model** for whatever is left over.
-4. Fill what it confidently matched, and upload your tailored résumé to the file input.
-5. Scroll to the top and drop a banner across the page:
-   *BidWatch filled this form — review every field, then submit manually.*
-6. Report back in Telegram: what it filled, what it couldn't match, and anything that
-   looks required but is still blank.
-
-```
-Form opened and filled — Acme Corp
-
-✅ Filled: first name, last name, email, phone, LinkedIn, cover letter, résumé
-⚠️ Could not match: "Why do you want to work here?"
-⚠️ Left blank (looks required): "Salary expectation"
-
-Nothing was submitted. Review every field in the browser window, then submit it yourself.
-```
-
-> **BidWatch never clicks submit.** Not on a timer, not on your behalf, not ever. The
-> browser is left open with the form filled and control passes to you. There is no code
-> path in `tools/formfill.py` that clicks, submits, or presses Enter — and a test reads
-> the module's own source to assert that stays true.
-
-Greenhouse, Lever, Ashby and Workable are handled with provider-specific selectors
-first, since their DOM structures are stable and they account for a large share of
-postings. The model layer can only choose among values that actually exist in
-`applicant.md` — it cannot invent one — and a field it isn't sure about is left blank,
-because a wrong answer on a job application is worse than an empty box. Every mapping
-decision is logged with the layer that made it, so a bad fill is diagnosable.
-
-**Job boards are not application forms, and BidWatch knows the difference.** A Remote
-OK listing has fifty-odd inputs — search, filters, newsletter signup — and no employer
-form at all. Site chrome is discarded before matching, and a page is only treated as an
-application if it has a real `<form>`, a file upload, a free-text area, or at least three
-identifiable fields. Otherwise nothing is filled and you are told why.
-
-**Signing in once makes boards work.** Remote OK only reveals the employer's apply link
-to a signed-in account, so BidWatch's browser keeps its own profile in
-`.browser_profile/` (gitignored — it holds cookies). Sign in once in that window and
-later applications go straight through to the employer's form. If a board still won't
-hand it over, click Apply yourself and send the bot:
-
-```
-fill https://boards.greenhouse.io/employer/jobs/12345
-```
-
-It fills that page for whichever application is in progress.
-
-If the page won't load, the form isn't detectable, or the site blocks automation, you
-get the manual handoff instead — the apply URL, the letter, and the résumé — with an
-explanation of what went wrong. There is always a path forward.
-
-**Requirements.** This needs a desktop session:
-
-```bash
-pip install playwright
-playwright install chromium
-```
-
-`HEADED_BROWSER=true` (the default) opens a real window. **This feature cannot work
-when BidWatch runs headless on a server** — the whole point is handing you a browser to
-review. Everything else in BidWatch runs fine headless; only this button needs a
-screen.
-
-**Be clear about the limits: fully automated submission covers email and supported ATS
-providers only.** Everything else is a manual handoff with the letter already written.
-BidWatch reports the path it actually took every time — it never claims a submission
-that didn't happen.
-
-Submissions are capped at `MAX_SUBMISSIONS_PER_HOUR` (default 5), and every attempt is
-logged with its outcome.
 
 ---
 
@@ -274,16 +213,14 @@ bidwatch/
 │   ├── profile.py              # profile loading
 │   ├── applicant.py            # applicant.md parsing, screening answers
 │   ├── scoring.py              # fit scoring + defensive parsing
-│   ├── apply.py                # how to apply: email / known ATS / manual
 │   ├── letter.py               # cover letter generation and revision
 │   ├── resume.py               # career database parsing, selection, PDF rendering
-│   ├── submit.py               # SMTP, ATS attempt, manual handoff
-│   ├── formfill.py             # Playwright form detection, matching and filling
+│   ├── package.py              # the copy-paste field sheet
 │   ├── notify.py               # message format, buttons, Telegram transport
 │   └── llm.py                  # shared Bedrock client + token accounting
 ├── generated_resumes/          # tailored PDFs, one per application (gitignored)
 ├── fixtures/sample_postings.json   # for --dry-run
-├── tests/                      # 93 tests: no network, no model calls, no mail, no browser
+├── tests/                      # 70 tests: no network, no model calls, nothing outbound
 └── docs/architecture.md
 ```
 
@@ -449,9 +386,6 @@ All in [`config.py`](config.py), each overridable by an environment variable.
 | `TAG` | `BIDWATCH_TAG` | `backend` | Remote OK tag to monitor. |
 | `SCORE_THRESHOLD` | `SCORE_THRESHOLD` | `65` | Notify only above this score. |
 | `MAX_POSTINGS_PER_RUN` | `MAX_POSTINGS_PER_RUN` | `15` | Hard cap on postings scored per run. |
-| `MAX_SUBMISSIONS_PER_HOUR` | `MAX_SUBMISSIONS_PER_HOUR` | `5` | Ceiling on confirmed applications per rolling hour. |
-| `HEADED_BROWSER` | `HEADED_BROWSER` | `true` | Open a visible browser for form filling. Needs a desktop session. |
-| `BROWSER_PROFILE_DIR` | `BROWSER_PROFILE_DIR` | `.browser_profile` | Where the form-filling browser keeps cookies, so a board sign-in persists. |
 | `RUN_INTERVAL_MINUTES` | `RUN_INTERVAL_MINUTES` | `30` | Scheduled interval (floored at 15). |
 | `MAX_DESCRIPTION_CHARS` | — | `2000` | Truncation before the model sees a description. |
 
@@ -479,11 +413,10 @@ descriptive `User-Agent`.
 
 ## Design decisions
 
-**Confirmation is structural, not a promise.** The scanning agent's tool set contains
-nothing that can reach an employer — the worst a misbehaving model can do is notify you
-about a bad job. Submission lives in a separate module reachable only through a button
-tap and a second explicit `Confirm & Submit`. No timeout auto-confirms, and re-tapping
-Bid on a job you already applied to is refused rather than reopened.
+**Scope is enforced by absence.** The agent's tool set contains nothing that can reach
+an employer, so the worst a misbehaving model can do is notify you about a bad job.
+Preparing a package and submitting one are different acts, and only the first exists
+here. Re-preparing a job you already marked applied is refused rather than reopened.
 
 **Notification ordering is enforced in code, not asked of the model.** The model issues
 its `send_notification` calls in one parallel batch, so their arrival order is not
@@ -498,12 +431,10 @@ Only phrasings that real forms use are collected now: a missed question shows up
 blank you fill in, while a false positive puts marketing copy and a mismatched answer
 into something you send to an employer.
 
-**Draft, never send.** The agent has no tool capable of reaching a client — the only
-outbound tool is `send_notification`, which talks to you. This is a structural
-guarantee, not a promise in a prompt: even a badly-behaved model cannot submit a
-proposal, because no such capability exists in the tool set. The system prompt states
-the rule too, but the tool boundary is what actually enforces it. Sending is where
-reputation and money are at stake, and that judgement stays human.
+**Prepare, never send.** The only outbound tool is `send_notification`, which talks to
+you. Even a badly-behaved model cannot contact an employer, because no such capability
+exists anywhere in the project. Sending is where reputation is at stake, and that
+judgement stays human.
 
 **Dedupe by posting id, in a local store.** Notification fatigue kills this category
 of tool. Remote OK ids are stable, so recording them in SQLite gives an exact
@@ -570,22 +501,16 @@ usage is logged after every run.
 
 ## Honest limits
 
-- **Automated submission covers email and supported ATS providers only.** Greenhouse
-  and Lever both need a per-employer token this project does not hold, so in practice
-  most ATS jobs take the manual path — with the letter already written and every field
-  ready to paste. BidWatch tells you which path it actually took, every time.
+- **BidWatch never submits.** It prepares the package; you apply. See "Why BidWatch
+  does not submit for you" above — this is a scoped decision, not an unfinished one.
 - **The feed is ~24 hours behind the Remote OK website.** A daily scout, not a race.
 - **Résumés are assembled from what you wrote, so they are only as good as
   `profile.md`.** A project you never added cannot appear on a résumé, by design.
 - **The "About" line and screening questions are extracted, not generated.** When a
   page yields nothing useful, you get a shorter message rather than a plausible
   invention.
-- **Form filling needs a desktop session.** It opens a real window by design; it cannot
-  work on a headless server, and it will not fill forms inside a cross-origin iframe.
-- **Remote OK will not give the employer's apply URL to automation.** Its Apply button
-  redirects to a sign-up page. Sign in once in BidWatch's browser profile, or click
-  Apply yourself and send `fill <url>`. This is the board's policy, not a bug BidWatch
-  can code around.
+- **The apply link goes to the Remote OK listing**, not the employer's form: the board
+  reveals that only to a signed-in human. One tap from the listing gets you there.
 - **The listener is long-polling, not a webhook.** Simple to run anywhere, but it must
   be running for buttons to respond.
 
@@ -604,8 +529,6 @@ usage is logged after every run.
 - **Richer filters.** Hourly-rate parsing from free-text descriptions, timezone
   overlap scoring, and per-tag thresholds.
 - **A web dashboard** for reviewing the queue when Telegram isn't the right surface.
-- **More ATS coverage**, including authenticated Greenhouse/Lever submissions where the
-  employer's board key is available.
 - **Outcome tracking**: which letters got replies, feeding back into scoring.
 
 ---

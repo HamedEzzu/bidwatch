@@ -1,7 +1,7 @@
-"""Console fallback: the same bid flow, driven by terminal prompts.
+"""Console fallback: the same prepared package, printed to the terminal.
 
 Used when Telegram is not configured, or with --interactive for testing the
-whole flow locally. Buttons become single-key prompts; nothing else changes.
+whole flow locally. The résumé path is shown rather than attached.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ def handle_job(posting: dict[str, Any]) -> None:
         print(bidflow.skip(posting_id) + "\n")
         return
 
-    print("\nReading the application page and filling in your details…\n")
+    print("\nWriting the cover letter and building a tailored résumé…\n")
     draft = bidflow.start_bid(posting_id)
     if "error" in draft:
         print(f"Could not prepare this application: {draft['error']}\n")
@@ -52,58 +52,30 @@ def handle_job(posting: dict[str, Any]) -> None:
 
 
 def review_loop(posting_id: str, draft: dict[str, Any]) -> None:
-    """Show the draft and loop on edits until confirmed or cancelled."""
+    """Show the package and loop on letter edits until the user is done."""
     while True:
         print("\n" + "-" * 72)
-        print(bidflow.render_draft(draft))
+        print(bidflow.render_package(draft))
         print("-" * 72)
-        method = (draft.get("requirements") or {}).get("method", "")
-        prompt = "[c]onfirm & submit  [e]dit letter  [r]ésumé path  "
-        options = {"c", "e", "r", "x"}
-        if method in ("manual", "known_ats"):
-            prompt += "[f]ill form in browser  "
-            options.add("f")
-        choice = _ask(prompt + "[x] cancel  > ", options)
-
-        if choice == "f":
-            print("\nOpening the application page in a browser…\n")
-            _, message = bidflow.fill_form(posting_id)
-            print(message + "\n")
-            continue
-
-        if choice == "r":
-            path = draft.get("resume_path", "")
-            print(f"\nTailored résumé: {path or 'none built'}\n")
-            continue
+        choice = _ask("[e]dit letter  [a] mark as applied  [x] close  > ", {"e", "a", "x"})
 
         if choice == "x":
             print(bidflow.cancel(posting_id) + "\n")
             return
 
-        if choice == "e":
-            try:
-                instruction = input("What should change? > ").strip()
-            except (EOFError, KeyboardInterrupt):
-                print()
-                return
-            if not instruction:
-                continue
-            print("Rewriting the letter…")
-            draft = bidflow.revise(posting_id, instruction)
-            if "error" in draft:
-                print(draft["error"] + "\n")
-                return
-            continue
+        if choice == "a":
+            print("\n" + bidflow.mark_applied(posting_id) + "\n")
+            return
 
-        resume_path = draft.get("resume_path", "")
-        status, detail = bidflow.confirm_and_submit(posting_id)
-        headers = {
-            "applied_email": "✅ Applied by email",
-            "applied_ats": "✅ Applied through the ATS",
-            "applied_manual": "📋 Manual submission needed — everything is prepared below",
-            "failed": "⚠️ Not sent",
-        }
-        print(f"\n{headers.get(status, status)}\n\n{detail}\n")
-        if status == "applied_manual" and resume_path:
-            print(f"Upload this résumé with the form: {resume_path}\n")
-        return
+        try:
+            instruction = input("What should change? > ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        if not instruction:
+            continue
+        print("Rewriting the letter…")
+        draft = bidflow.revise(posting_id, instruction)
+        if "error" in draft:
+            print(draft["error"] + "\n")
+            return

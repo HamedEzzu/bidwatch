@@ -105,7 +105,7 @@ def test_unjudged_postings_come_back(tmp_path, postings):
 
 def test_every_terminal_status_counts_as_handled(tmp_path, postings):
     db = str(tmp_path / "test.db")
-    for status, posting in zip(("notified", "skipped", "applied_email", "bidding"), postings):
+    for status, posting in zip(("notified", "skipped", "applied", "bidding"), postings):
         store.filter_new([posting], db)
         store.set_status(posting["id"], status, db_path=db)
     assert store.filter_new(postings, db) == []
@@ -375,33 +375,7 @@ def test_missing_applicant_file_returns_error_string(tmp_path):
     assert read_applicant(str(tmp_path / "nope.md")) == MISSING_APPLICANT_MESSAGE
 
 
-# --- application method detection ------------------------------------------
 
-def test_detects_known_ats_providers():
-    from tools.apply import detect_ats
-
-    assert detect_ats("apply: https://boards.greenhouse.io/acme/jobs/12345")["provider"] == "greenhouse"
-    assert detect_ats("https://jobs.lever.co/acme/abc-def")["provider"] == "lever"
-    assert detect_ats("https://jobs.ashbyhq.com/acme/xyz-1")["provider"] == "ashby"
-    assert detect_ats("nothing here") is None
-
-
-def test_prefers_a_hiring_inbox_over_a_generic_address():
-    from tools.apply import find_application_email
-
-    assert find_application_email("write to support@acme.com or careers@acme.com") == "careers@acme.com"
-    assert find_application_email("only noreply@acme.com") is None
-    assert find_application_email("no addresses here") is None
-
-
-def test_finds_screening_questions_but_not_prose():
-    from tools.apply import find_screening_questions
-
-    found = find_screening_questions(
-        "How many years of Python do you have? Isn't the weather nice? Why do you want this role?"
-    )
-    assert any("years" in q for q in found)
-    assert not any("weather" in q for q in found)
 
 
 # --- store lifecycle -------------------------------------------------------
@@ -416,9 +390,9 @@ def test_status_lifecycle_and_no_resurfacing(tmp_path, postings):
     record = store.get_posting_record("1000001", db)
     assert record["score"] == 88 and record["notified_at"]
 
-    store.set_status("1000001", "applied_email", cover_letter="Dear team...", db_path=db)
+    store.set_status("1000001", "applied", cover_letter="Dear team...", db_path=db)
     record = store.get_posting_record("1000001", db)
-    assert record["status"] == "applied_email"
+    assert record["status"] == "applied"
     assert record["applied_at"] and record["cover_letter"] == "Dear team..."
 
     # Nothing already handled comes back on a later run.
@@ -453,51 +427,8 @@ def test_old_database_is_migrated_in_place(tmp_path, postings):
     assert store.get_status("1000001", db) == "skipped"
 
 
-def test_submission_rate_limit(tmp_path, monkeypatch):
-    db = str(tmp_path / "t.db")
-    for _ in range(5):
-        store.log_submission("x", "email", "sent", "ok", db_path=db)
-    assert store.submissions_last_hour(db) == 5
-    allowed, reason = store.submission_allowed(db)
-    assert allowed is False and "Rate limit" in reason
 
 
-def test_failed_submissions_do_not_consume_the_rate_limit(tmp_path):
-    db = str(tmp_path / "t.db")
-    for _ in range(9):
-        store.log_submission("x", "email", "failed", "smtp down", db_path=db)
-    assert store.submissions_last_hour(db) == 0
-    assert store.submission_allowed(db)[0] is True
-
-
-# --- email construction (no network) ---------------------------------------
-
-def test_application_email_has_subject_body_and_no_attachment_when_resume_missing(tmp_path):
-    from tools.submit import build_email
-
-    applicant = {"fields": {
-        "name": "Test Person", "email": "test@example.com", "phone": "+1 555 0100",
-        "location": "Testville", "timezone": "UTC+2", "linkedin": "https://li/x",
-        "resume_path": str(tmp_path / "missing.pdf"),
-    }}
-    posting = {"id": "1", "title": "Backend Engineer", "company": "Acme"}
-    message = build_email(posting, applicant, "Letter body here.", "jobs@acme.com")
-    assert message["To"] == "jobs@acme.com"
-    assert "Backend Engineer" in message["Subject"]
-    assert "Letter body here." in message.get_content()
-    assert not list(message.iter_attachments())
-
-
-def test_application_email_attaches_the_resume_when_present(tmp_path):
-    from tools.submit import build_email
-
-    resume = tmp_path / "My_Resume.pdf"
-    resume.write_bytes(b"%PDF-1.4 fake")
-    applicant = {"fields": {"name": "T", "email": "t@example.com", "resume_path": str(resume)}}
-    message = build_email({"id": "1", "title": "Role"}, applicant, "Body", "jobs@acme.com")
-    attachments = list(message.iter_attachments())
-    assert len(attachments) == 1
-    assert attachments[0].get_filename() == "My_Resume.pdf"
 
 
 # --- ordered delivery ------------------------------------------------------
@@ -521,25 +452,6 @@ def test_queued_notifications_flush_highest_score_first(monkeypatch, postings, t
     assert notify_mod.pending_count() == 0
 
 
-def test_marketing_questions_are_not_treated_as_screening_questions():
-    from tools.apply import find_screening_questions
-
-    # Job descriptions are full of rhetorical questions; none of these are
-    # things a form is asking the applicant.
-    assert find_screening_questions(
-        "Are you a talented Senior Developer looking for a remote job with decent compensation?"
-    ) == []
-    # Scraped pages carry embedded JSON, which must never become a question.
-    assert find_screening_questions('"description":" Are you a dev looking for work?') == []
-
-
-def test_screening_questions_are_deduplicated():
-    from tools.apply import find_screening_questions
-
-    found = find_screening_questions(
-        "What is your salary expectation? What is your salary expectation?"
-    )
-    assert len(found) == 1
 
 
 # --- career database and tailored résumés ----------------------------------
@@ -714,3 +626,74 @@ def test_irrelevant_skill_groups_are_dropped_from_a_tailored_resume():
     assert len(selection["skills"]) <= MAX_SKILL_GROUPS
     assert len(selection["skills"]) < len(db["skills"]), "a tailored résumé should not list every group"
     assert "Desktop" not in selection["skills"]
+
+
+# --- the application package -----------------------------------------------
+
+def test_field_sheet_has_one_value_per_line_ready_to_paste():
+    from tools.applicant import parse_applicant
+    from tools.package import field_sheet
+
+    sheet = field_sheet(parse_applicant())
+    lines = sheet.splitlines()
+    assert all(":" in line for line in lines)
+    assert lines[0].startswith("Full name: ")
+    for label in ("Email:", "Phone:", "Location:", "LinkedIn:", "GitHub:", "Portfolio:",
+                  "Availability:", "Salary expectation:", "Work authorization:", "Languages:"):
+        assert any(line.startswith(label) for line in lines), label
+
+
+def test_field_sheet_tidies_urls_and_notes_the_timezone():
+    from tools.package import field_sheet
+
+    sheet = field_sheet({
+        "fields": {"name": "A B", "email": "a@b.c", "phone": "1", "location": "Tripoli, Libya",
+                   "timezone": "UTC+2", "linkedin": "https://www.linkedin.com/in/x/"},
+        "answers": {},
+    })
+    assert "LinkedIn: linkedin.com/in/x" in sheet
+    assert "Location: Tripoli, Libya (remote, UTC+2)" in sheet
+
+
+def test_field_sheet_flags_missing_essentials_rather_than_omitting_them():
+    from tools.applicant import NEEDS_INPUT
+    from tools.package import field_sheet
+
+    sheet = field_sheet({"fields": {"name": "A B"}, "answers": {}})
+    assert f"Email: {NEEDS_INPUT}" in sheet
+    # Optional rows are simply absent, not padded with placeholders.
+    assert "Portfolio:" not in sheet
+
+
+def test_resume_line_reports_a_missing_file(tmp_path):
+    from tools.applicant import NEEDS_INPUT
+    from tools.package import resume_line
+
+    assert NEEDS_INPUT in resume_line("", "")
+    assert NEEDS_INPUT in resume_line(str(tmp_path / "nope.pdf"), "python-focused")
+    real = tmp_path / "cv.pdf"
+    real.write_bytes(b"%PDF-1.4")
+    assert resume_line(str(real), "python-focused") == "Résumé: python-focused (cv.pdf)"
+
+
+def test_telegram_code_block_escapes_html():
+    from tools.notify import code_block
+
+    block = code_block("a < b & c > d")
+    assert block.startswith("<pre>") and block.endswith("</pre>")
+    assert "&lt;" in block and "&amp;" in block and "&gt;" in block
+
+
+def test_no_module_can_submit_an_application():
+    """The scoped-design guarantee, checked across the whole package."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    banned = ("smtplib", "playwright", "sendmail")
+    offenders = []
+    for path in list(root.glob("*.py")) + list((root / "tools").glob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        for term in banned:
+            if term in text:
+                offenders.append(f"{path.name}: {term}")
+    assert offenders == [], offenders

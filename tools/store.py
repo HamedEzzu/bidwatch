@@ -2,11 +2,13 @@
 
 A posting moves through:
 
-    new -> notified -> bidding -> applied_email | applied_ats | applied_manual
-                    \\-> skipped
+    new -> rejected                       (scored below the threshold)
+        -> notified -> bidding -> applied (the user prepared and applied)
+                    -> skipped
 
-Only `new` postings are ever notified about, so nothing that has been sent,
-applied to or dismissed can resurface on a later run.
+Only postings with a verdict are withheld from later runs: one that was
+recorded but never judged — a crashed run, a truncated call — comes back,
+so a transient failure cannot cost a good job.
 """
 
 from __future__ import annotations
@@ -14,12 +16,12 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 from strands import tool
 
-from config import DB_PATH, MAX_SUBMISSIONS_PER_HOUR
+from config import DB_PATH
 from tools.fetch import hydrate
 
 logger = logging.getLogger(__name__)
@@ -29,7 +31,10 @@ STATUS_REJECTED = "rejected"
 STATUS_NOTIFIED = "notified"
 STATUS_BIDDING = "bidding"
 STATUS_SKIPPED = "skipped"
-APPLIED_STATUSES = ("applied_email", "applied_ats", "applied_manual")
+STATUS_APPLIED = "applied"
+#: Kept so databases written by earlier versions still read correctly.
+LEGACY_APPLIED = ("applied_email", "applied_ats", "applied_manual")
+APPLIED_STATUSES = (STATUS_APPLIED, *LEGACY_APPLIED)
 VALID_STATUSES = (
     STATUS_NEW, STATUS_REJECTED, STATUS_NOTIFIED, STATUS_BIDDING, STATUS_SKIPPED, *APPLIED_STATUSES
 )
@@ -65,6 +70,7 @@ def _connect(db_path: str = DB_PATH) -> sqlite3.Connection:
         ("notified_at", "ALTER TABLE seen_postings ADD COLUMN notified_at TEXT"),
         ("applied_at", "ALTER TABLE seen_postings ADD COLUMN applied_at TEXT"),
         ("cover_letter", "ALTER TABLE seen_postings ADD COLUMN cover_letter TEXT"),
+        ("resume_path", "ALTER TABLE seen_postings ADD COLUMN resume_path TEXT"),
         # The full posting is persisted so a separate process (bot.py) can
         # write a letter against the real description, not just the title.
         ("description", "ALTER TABLE seen_postings ADD COLUMN description TEXT"),
@@ -75,15 +81,6 @@ def _connect(db_path: str = DB_PATH) -> sqlite3.Connection:
     ):
         if column not in existing:
             conn.execute(ddl)
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS submissions ("
-        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        " posting_id TEXT,"
-        " method TEXT,"
-        " outcome TEXT,"
-        " detail TEXT,"
-        " attempted_at TEXT)"
-    )
     conn.commit()
     return conn
 
@@ -161,6 +158,7 @@ def set_status(
     status: str,
     score: int | None = None,
     cover_letter: str | None = None,
+    resume_path: str | None = None,
     db_path: str = DB_PATH,
 ) -> bool:
     """Move a posting to `status`, stamping the matching timestamp."""
@@ -179,9 +177,12 @@ def set_status(
         fields.append("score = ?")
         values.append(int(score))
     if cover_letter is not None:
-        # Retained as the record of what was actually sent.
+        # Retained as the record of what was prepared for this job.
         fields.append("cover_letter = ?")
         values.append(cover_letter)
+    if resume_path is not None:
+        fields.append("resume_path = ?")
+        values.append(resume_path)
     values.append(str(posting_id))
     try:
         conn = _connect(db_path)
@@ -216,62 +217,6 @@ def get_posting_record(posting_id: str, db_path: str = DB_PATH) -> dict[str, Any
             conn.close()
         except Exception:  # noqa: BLE001
             pass
-
-
-# --- submission log and rate limit -----------------------------------------
-
-def log_submission(
-    posting_id: str, method: str, outcome: str, detail: str = "", db_path: str = DB_PATH
-) -> None:
-    """Record one submission attempt and how it actually turned out."""
-    try:
-        conn = _connect(db_path)
-        with conn:
-            conn.execute(
-                "INSERT INTO submissions (posting_id, method, outcome, detail, attempted_at)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (str(posting_id), method, outcome, detail[:2000], _now()),
-            )
-        logger.info("Submission attempt logged: posting=%s method=%s outcome=%s", posting_id, method, outcome)
-    except sqlite3.Error as exc:
-        logger.error("Could not log submission for %s: %s", posting_id, exc)
-    finally:
-        try:
-            conn.close()
-        except Exception:  # noqa: BLE001
-            pass
-
-
-def submissions_last_hour(db_path: str = DB_PATH) -> int:
-    """How many submissions actually went out in the last rolling hour."""
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(timespec="seconds")
-    try:
-        conn = _connect(db_path)
-        with conn:
-            row = conn.execute(
-                "SELECT COUNT(*) AS n FROM submissions WHERE outcome = 'sent' AND attempted_at >= ?",
-                (cutoff,),
-            ).fetchone()
-        return int(row["n"])
-    except sqlite3.Error as exc:
-        logger.error("Could not count recent submissions: %s", exc)
-        return 0
-    finally:
-        try:
-            conn.close()
-        except Exception:  # noqa: BLE001
-            pass
-
-
-def submission_allowed(db_path: str = DB_PATH) -> tuple[bool, str]:
-    """Check the hourly submission ceiling. Returns (allowed, reason)."""
-    used = submissions_last_hour(db_path)
-    if used >= MAX_SUBMISSIONS_PER_HOUR:
-        return False, (
-            f"Rate limit reached: {used} applications already sent in the last hour "
-            f"(limit {MAX_SUBMISSIONS_PER_HOUR}). Try again later."
-        )
-    return True, f"{used}/{MAX_SUBMISSIONS_PER_HOUR} submissions used this hour."
 
 
 @tool

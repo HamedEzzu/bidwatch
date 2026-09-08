@@ -184,14 +184,29 @@ def _call(method: str, payload: dict[str, Any], timeout: int = 30) -> dict[str, 
     return None
 
 
+def html_escape(text: str) -> str:
+    """Escape for Telegram's HTML parse mode."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def code_block(text: str) -> str:
+    """A copy-friendly block: Telegram renders <pre> with a copy button."""
+    return f"<pre>{html_escape(text)}</pre>"
+
+
 def send_message(
-    text: str, buttons: dict[str, Any] | None = None, chat_id: str | None = None
+    text: str,
+    buttons: dict[str, Any] | None = None,
+    chat_id: str | None = None,
+    html: bool = False,
 ) -> dict[str, Any] | None:
     """Send one Telegram message, optionally with an inline keyboard."""
     chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID")
     if not chat_id:
         return None
     payload: dict[str, Any] = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
+    if html:
+        payload["parse_mode"] = "HTML"
     if buttons:
         payload["reply_markup"] = buttons
     return _call("sendMessage", payload)

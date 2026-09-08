@@ -37,64 +37,37 @@ flowchart TD
     CO --> H
 ```
 
-## The bid flow
+## The application package
 
-Scanning and applying are deliberately separate. The scanning agent has no tool that
-can reach an employer; submission lives in its own path, entered only by a button tap
-and completed only by an explicit confirmation.
+Scanning and applying are deliberately separate, and only one of them exists in code.
+BidWatch prepares a package; the person submits it. There is no module here that can
+send mail, post a form, or drive a browser.
 
 ```mermaid
 flowchart TD
-    T[Bid tapped] --> R[gather_requirements: read the listing page]
-    R --> C{Application method}
-    C -->|email found| E[method = email]
-    C -->|Greenhouse / Lever / Ashby / Workable| A[method = known_ats]
-    C -->|anything else| M[method = manual]
+    T[Bid tapped] --> R[Build the job-tailored résumé]
+    T --> L[Write the cover letter in the freelancer's voice]
+    T --> F[Field sheet from applicant.md]
 
-    E --> F[Fill from applicant.md + generate cover letter]
-    A --> F
-    M --> F
-    F --> RES[Build tailored résumé: select from profile.md, render one-page PDF]
-    RES -.->|generation failed| STATIC[Fall back to static My_Resume.pdf]
-    F --> QQ2[Unanswerable screening questions marked NEEDS YOUR INPUT]
-    QQ2 --> QQ[ ]
-    RES --> QQ
-    STATIC --> QQ
-    QQ --> D[Show the complete draft + View résumé]
+    R --> P[Application package]
+    L --> P
+    F --> P
+    P --> C1[Résumé PDF, sent as a file]
+    P --> C2[Cover letter in a copy block]
+    P --> C3[Field sheet in a copy block]
+    P --> C4[Apply link as a button]
 
-    D --> B{User decides}
-    B -->|Edit letter| ED[Revise from plain-language instruction] --> D
-    B -->|Cancel| X([Nothing sent])
-    B -->|Confirm & Submit| S{Submit by method}
+    C2 --> E{Edit letter?}
+    E -->|plain-language instruction| L
+    C4 --> H([Human reviews and submits])
+    H --> M[Mark as applied] --> S([applied: recorded, never resurfaces])
 
-    S -->|email| SM[SMTP: letter as body, résumé attached] --> OK1([applied_email])
-    S -->|known_ats| AT[POST to the provider endpoint]
-    AT -->|success| OK2([applied_ats])
-    AT -->|token missing or schema mismatch| MH
-    S -->|manual| MH[Hand back apply URL, letter and fields] --> OK3([applied_manual])
-
-    D -->|Fill form in browser| FF[Playwright: open a visible window, persistent profile]
-    FF --> BOARD{Is this a job-board listing?}
-    BOARD -->|yes| AP[Click its Apply link]
-    AP -->|sign-in wall| SI([Sign in once; the profile remembers])
-    AP -->|still on the board| ASK([Click Apply yourself, then send: fill URL])
-    BOARD -->|no| DET
-    AP -->|employer page| DET
-    DET --> CHROME[Discard search, login and newsletter inputs]
-    CHROME --> ISFORM{Real application form?}
-    ISFORM -->|no| ASK
-    ISFORM -->|yes| MAP2[ ]
-    DET2[Detect fields: labels, name/id, placeholder, aria]
-    MAP2 --> MAP[Match: ATS selectors, then attributes, then labels, then the model]
-    MAP --> FILL[Fill fields, upload the tailored résumé, inject the review banner]
-    FILL --> HAND([Browser handed to the user — never submitted])
-    FF -.->|page blocked or no form found| MH
-
-    style X fill:#fee,stroke:#c00
+    style H fill:#e7f5e7,stroke:#2a2
 ```
 
-Nothing crosses from the left of that diagram to a submission without passing through
-`Confirm & Submit`. There is no timeout that auto-confirms.
+Automated submission was built and removed on purpose: employer flows are gated in
+ways that cannot be automated reliably, and a feature that works unpredictably is worse
+than none when the output carries someone's name to a real employer.
 
 ## Posting lifecycle
 
@@ -104,18 +77,20 @@ about, so nothing already handled can resurface:
 ```mermaid
 stateDiagram-v2
     [*] --> new: fetched and unseen
+    new --> rejected: scored below the threshold
     new --> notified: passed the threshold
-    notified --> bidding: Bid tapped
+    notified --> bidding: Bid tapped, package prepared
     notified --> skipped: Skip tapped
-    bidding --> applied_email: SMTP accepted it
-    bidding --> applied_ats: the ATS accepted it
-    bidding --> applied_manual: handed back for manual submission
-    bidding --> notified: Cancel
-    applied_email --> [*]
-    applied_ats --> [*]
-    applied_manual --> [*]
+    bidding --> applied: the user marked it applied
+    bidding --> notified: closed without applying
+    rejected --> [*]
+    applied --> [*]
     skipped --> [*]
 ```
+
+Only a posting with a verdict is withheld from later runs. One recorded but never
+judged — a crashed run, a truncated tool call — comes back, so a transient failure
+cannot bury a good job.
 
 ## Two processes
 
@@ -184,31 +159,6 @@ The same six steps can run either way:
   `--dry-run` (zero model calls) and useful when a run must be exactly predictable
   or maximally cheap.
 
-## Form-field matching
-
-Four layers, cheapest and most reliable first. Each fill records the layer that chose
-it, so a wrong value can be traced back to the decision that produced it.
-
-```mermaid
-flowchart LR
-    F[Detected field] --> A{Known ATS?}
-    A -->|Greenhouse, Lever, Ashby, Workable| P[Provider selector]
-    A -->|no| B{name / id exact match?}
-    B -->|yes| AT[Attribute match]
-    B -->|no| C{Label contains a known phrase?}
-    C -->|yes| L[Label match]
-    C -->|no| M{{Model: which stored value fits?}}
-    M -->|names a real value| MM[Model match]
-    M -->|null or unknown name| U[Left blank and reported]
-    P --> FILL[Fill]
-    AT --> FILL
-    L --> FILL
-    MM --> FILL
-```
-
-The matching functions are pure and take plain field descriptors, so every layer is
-unit-tested without a browser. Playwright appears only in the thin execution layer.
-
 ## Résumé selection
 
 The model never writes résumé text. It returns identifiers — a summary variant name,
@@ -252,7 +202,6 @@ file changes.
 | Zero-model test path | `--dry-run` against `fixtures/sample_postings.json` | — |
 | Token accounting per run | `tools/llm.py` → logged by the scheduler | always on |
 | Poll floor (politeness to the source) | `scheduler.py` | 15 minutes |
-| Submissions per rolling hour | `MAX_SUBMISSIONS_PER_HOUR` | 5 |
 | Postings referred to by id, not re-serialized through the model | `tools/fetch.py` cache | always on |
 | Candidates ranked before the cap, so the budget goes to plausible jobs | `agent.prioritize` | always on |
 

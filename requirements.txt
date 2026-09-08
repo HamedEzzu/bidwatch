@@ -28,7 +28,6 @@ opentelemetry-sdk==1.44.0
 opentelemetry-semantic-conventions==0.65b0
 packaging==26.3
 pillow==12.3.0
-playwright==1.62.0
 pluggy==1.6.0
 pycparser==3.0
 pydantic==2.13.5

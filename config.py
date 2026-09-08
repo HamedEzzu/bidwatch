@@ -24,15 +24,10 @@ MAX_POSTINGS_PER_RUN = int(os.getenv("MAX_POSTINGS_PER_RUN", "15"))
 RUN_INTERVAL_MINUTES = int(os.getenv("RUN_INTERVAL_MINUTES", "30"))
 
 # --- Applying -------------------------------------------------------------
-# No application is ever submitted without an explicit confirmation; this is a
-# ceiling on how many confirmed submissions may go out in a rolling hour.
-MAX_SUBMISSIONS_PER_HOUR = int(os.getenv("MAX_SUBMISSIONS_PER_HOUR", "5"))
+# BidWatch prepares applications; the person submits them. There is nothing to
+# rate-limit here, because nothing is sent.
 COVER_LETTER_MAX_WORDS = int(os.getenv("COVER_LETTER_MAX_WORDS", "220"))
 
-# Assisted form filling opens a REAL, VISIBLE browser window, so it needs a
-# desktop session. Set HEADED_BROWSER=false only for automated testing — a
-# headless fill is pointless, since the whole feature hands you the window.
-HEADED_BROWSER = os.getenv("HEADED_BROWSER", "true").strip().lower() in ("1", "true", "yes", "on")
 
 
 # --- Paths -----------------------------------------------------------------
@@ -42,10 +37,6 @@ APPLICANT_PATH = os.path.join(BASE_DIR, "applicant.md")
 DB_PATH = os.path.join(BASE_DIR, "bidwatch.db")
 FIXTURE_PATH = os.path.join(BASE_DIR, "fixtures", "sample_postings.json")
 
-# The form-filling browser keeps its own profile, so a site you sign into once
-# (Remote OK only reveals employer apply links to signed-in accounts) stays
-# signed in for later runs. Gitignored: it holds cookies.
-BROWSER_PROFILE_DIR = os.getenv("BROWSER_PROFILE_DIR", os.path.join(BASE_DIR, ".browser_profile"))
 
 # Descriptions are truncated before reaching the model to control token cost.
 MAX_DESCRIPTION_CHARS = 2000

@@ -100,7 +100,8 @@ WinForms with SQL Server, some WPF {tags: desktop, winforms, wpf, csharp, dotnet
 - Bullets:
   - Built an autonomous agent that scans job feeds, scores postings against a skill profile, and drafts tailored applications, using the Strands Agents SDK over Amazon Bedrock with six custom tools. {tags: python, ai, llm, agent, automation}
   - Designed a tool-calling loop with defensive parsing of model output, per-run cost caps, and a deterministic no-model test path so the whole pipeline can run offline. {tags: python, ai, llm, testing, architecture}
-  - Integrated the Telegram Bot API with inline-keyboard callbacks and a stateful edit-and-confirm conversation flow, plus SMTP submission with attachments. {tags: python, api, integration, telegram, smtp}
+  - Integrated the Telegram Bot API with inline-keyboard callbacks, document uploads and a stateful edit-and-review conversation flow. {tags: python, api, integration, telegram}
+  - Generated job-tailored résumés as ATS-friendly PDFs (ReportLab), selecting content by index from a structured career database so the model can reorder evidence but never author a claim. {tags: python, pdf, ai, llm, architecture}
 
 <!-- TODO (Hamed): the WinForms + SQL Server point-of-sale project is listed as a
      skill but has no project entry here, so the generator cannot use it. Add it

@@ -7,6 +7,9 @@ Run this alongside the scheduler:
 
 Long-polls getUpdates, answers every callback promptly so buttons never hang,
 and rewrites the original job message once an action resolves.
+
+There is no submit button anywhere in here. BidWatch prepares an application
+package; the person reviews it and applies.
 """
 
 from __future__ import annotations
@@ -14,7 +17,6 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import re
 import sys
 import time
 from typing import Any
@@ -24,6 +26,7 @@ from dotenv import load_dotenv
 import bidflow
 from tools.notify import (
     answer_callback,
+    code_block,
     edit_message,
     get_updates,
     send_document,
@@ -33,45 +36,27 @@ from tools.notify import (
 
 logger = logging.getLogger("bidwatch.bot")
 
-CONFIRM_BUTTONS = {
-    "inline_keyboard": [
-        [
-            {"text": "📤 Confirm & Submit", "callback_data": "confirm:{id}"},
-            {"text": "✏️ Edit letter", "callback_data": "edit:{id}"},
-        ],
-        [
-            {"text": "📄 View résumé", "callback_data": "resume:{id}"},
-            {"text": "✖️ Cancel", "callback_data": "cancel:{id}"},
-        ],
-    ]
-}
-
 # Telegram rejects messages over 4096 characters.
 TELEGRAM_LIMIT = 4000
 
 
-def confirm_buttons(posting_id: str, method: str = "") -> dict[str, Any]:
-    """Buttons under an application draft.
+def package_buttons(posting_id: str, apply_url: str = "") -> dict[str, Any]:
+    """Buttons under a prepared package: edit the letter, or mark it applied.
 
-    "Fill form" only appears for manual and ATS jobs: the email path already
-    submits properly, so opening a browser there would just be noise.
+    No submit button, because BidWatch cannot submit. The apply link is a URL
+    button so the employer's page is one tap away.
     """
-    rows = [
-        [{"text": button["text"], "callback_data": button["callback_data"].format(id=posting_id)}
-         for button in row]
-        for row in CONFIRM_BUTTONS["inline_keyboard"]
-    ]
-    if method in ("manual", "known_ats"):
-        rows.insert(1, [{"text": "🖊 Fill form in browser", "callback_data": f"fill:{posting_id}"}])
+    rows: list[list[dict[str, Any]]] = []
+    if apply_url:
+        rows.append([{"text": "🔗 Apply here", "url": apply_url}])
+    rows.append([
+        {"text": "✏️ Edit letter", "callback_data": f"edit:{posting_id}"},
+        {"text": "✅ Mark as applied", "callback_data": f"applied:{posting_id}"},
+    ])
     return {"inline_keyboard": rows}
 
 
-def draft_method(posting_id: str) -> str:
-    draft = bidflow.get_draft(posting_id)
-    return ((draft or {}).get("requirements") or {}).get("method", "")
-
-
-def send_long(text: str, buttons: dict[str, Any] | None = None) -> None:
+def send_long(text: str, buttons: dict[str, Any] | None = None, html: bool = False) -> None:
     """Send a message, splitting it if it exceeds Telegram's length limit."""
     chunks: list[str] = []
     remaining = text
@@ -82,7 +67,31 @@ def send_long(text: str, buttons: dict[str, Any] | None = None) -> None:
         remaining = remaining[split_at:].lstrip("\n")
     chunks.append(remaining)
     for index, chunk in enumerate(chunks):
-        send_message(chunk, buttons if index == len(chunks) - 1 else None)
+        send_message(chunk, buttons if index == len(chunks) - 1 else None, html=html)
+
+
+def send_package(posting_id: str, draft: dict[str, Any]) -> None:
+    """Deliver the prepared application: résumé file, letter, field sheet, link."""
+    posting = draft["posting"]
+    header = f"Application package — {posting.get('title', '')} @ {posting.get('company', '')}"
+
+    resume_path = draft.get("resume_path", "")
+    note = draft.get("resume_note", "")
+    if resume_path and os.path.isfile(resume_path):
+        caption = f"{header}\n\nRésumé: {note}" if note else header
+        if not send_document(resume_path, caption=caption[:1000]):
+            send_message(f"{header}\n\nThe résumé is on disk at:\n{resume_path}")
+    else:
+        send_message(f"{header}\n\n⚠️ No résumé could be generated for this one.")
+
+    # The letter and field sheet go in code blocks: Telegram gives those a copy
+    # button, which is the entire point of a package you paste into a form.
+    send_long(f"Cover letter:\n{code_block(draft['letter'])}", html=True)
+    send_message(
+        f"Application details:\n{code_block(draft['sheet'])}",
+        buttons=package_buttons(posting_id, draft.get("apply_url", "")),
+        html=True,
+    )
 
 
 def handle_callback(callback: dict[str, Any]) -> None:
@@ -104,71 +113,32 @@ def handle_callback(callback: dict[str, Any]) -> None:
         return
 
     if action == "bid":
-        answer_callback(callback_id, "Reading the application page…")
-        send_message("Reading the application page and filling in your details…")
+        answer_callback(callback_id, "Preparing your application…")
+        send_message("Writing the cover letter and building a résumé for this one…")
         draft = bidflow.start_bid(posting_id)
         if "error" in draft:
             send_message(f"Could not prepare this application: {draft['error']}")
             return
-        edit_message(chat_id, message_id, f"📝 Bidding…\n\n{original}")
-        send_long(bidflow.render_draft(draft), confirm_buttons(posting_id, draft_method(posting_id)))
-        return
-
-    if action == "fill":
-        answer_callback(callback_id, "Opening the browser…")
-        send_message("Opening the application page and filling it in — the browser window is on your desktop.")
-        opened, message = bidflow.fill_form(posting_id)
-        send_long(message)
-        if opened:
-            # The form is filled but nothing is submitted; the draft stays
-            # active so the user can still cancel or use another path.
-            send_message("Review it in the browser, then submit it yourself. BidWatch never clicks submit.")
+        edit_message(chat_id, message_id, f"📝 Package prepared\n\n{original}")
+        send_package(posting_id, draft)
         return
 
     if action == "edit":
         answer_callback(callback_id, "Send your instructions")
         if not bidflow.set_awaiting_edit(posting_id):
-            send_message("That draft is no longer active. Tap Bid again to restart.")
+            send_message("That application is no longer active. Tap Bid again to rebuild it.")
             return
         send_message(
-            "What should change? Reply in plain language — e.g. \"make it shorter\", "
-            "\"less formal\", \"mention the WebSockets project\"."
+            'What should change? Reply in plain language — e.g. "make it shorter", '
+            '"less formal", "mention the WebSockets project".'
         )
         return
 
-    if action == "resume":
-        answer_callback(callback_id, "Sending the résumé…")
-        draft = bidflow.get_draft(posting_id)
-        path = (draft or {}).get("resume_path", "")
-        if not path or not os.path.isfile(path):
-            send_message("No résumé has been built for this application. Tap Bid again to rebuild it.")
-            return
-        note = (draft or {}).get("resume_note", "")
-        if not send_document(path, caption=f"Tailored résumé — {note}" if note else "Tailored résumé"):
-            send_message(f"Could not upload the résumé. It is on disk at:\n{path}")
-        return
-
-    if action == "cancel":
-        answer_callback(callback_id, "Cancelled")
-        send_message(bidflow.cancel(posting_id))
-        return
-
-    if action == "confirm":
-        answer_callback(callback_id, "Submitting…")
-        # Captured before submission clears the draft.
-        resume_before = (bidflow.get_draft(posting_id) or {}).get("resume_path", "")
-        status, detail = bidflow.confirm_and_submit(posting_id)
-        headers = {
-            "applied_email": "✅ Applied by email",
-            "applied_ats": "✅ Applied through the ATS",
-            "applied_manual": "📋 Manual submission needed — everything is prepared below",
-            "failed": "⚠️ Not sent",
-        }
-        send_long(f"{headers.get(status, status)}\n\n{detail}")
-        if status == "applied_manual" and resume_before:
-            # Manual submission means the user uploads it themselves, so put the
-            # file in the chat rather than only naming its path.
-            send_document(resume_before, caption="Tailored résumé for this application")
+    if action == "applied":
+        answer_callback(callback_id, "Recorded")
+        send_message(bidflow.mark_applied(posting_id))
+        if chat_id and message_id:
+            edit_message(chat_id, message_id, f"✅ Applied\n\n{original}")
         return
 
     answer_callback(callback_id, "Unknown action")
@@ -182,28 +152,11 @@ def handle_message(message: dict[str, Any]) -> None:
     if text.startswith("/"):
         if text.startswith("/start") or text.startswith("/help"):
             send_message(
-                "BidWatch is listening. Job alerts arrive here with Bid / Open / Skip buttons.\n"
-                "Tap Bid to prepare an application; nothing is ever sent without your "
-                "explicit Confirm & Submit.\n\n"
-                "If a job board hides the employer's form behind its own Apply button, click it "
-                "yourself and send me:  fill <url>"
+                "BidWatch is listening. Job alerts arrive here with Bid / Open / Skip buttons.\n\n"
+                "Tap Bid and I'll prepare the whole application — a résumé tailored to that job, "
+                "a cover letter, and your details ready to paste. You review it and submit it "
+                "yourself; BidWatch never sends anything to an employer."
             )
-        return
-
-    # "fill <url>" applies to whichever draft is active: job boards hand out the
-    # employer's form only after a click the user makes themselves.
-    fill_match = re.match(r"(?:fill|form)\s+(https?://\S+)", text, re.I)
-    if fill_match:
-        active = bidflow.active_draft_ids()
-        if not active:
-            send_message("No application is in progress. Tap Bid on a job first.")
-            return
-        posting_id = active[-1]
-        send_message(f"Opening that page and filling it in for {posting_id}…")
-        opened, message = bidflow.fill_form(posting_id, override_url=fill_match.group(1))
-        send_long(message)
-        if opened:
-            send_message("Review it in the browser, then submit it yourself. BidWatch never clicks submit.")
         return
 
     posting_id = bidflow.awaiting_edit_id()
@@ -215,7 +168,11 @@ def handle_message(message: dict[str, Any]) -> None:
     if "error" in draft:
         send_message(draft["error"])
         return
-    send_long(bidflow.render_draft(draft), confirm_buttons(posting_id, draft_method(posting_id)))
+    send_long(
+        f"Revised cover letter:\n{code_block(draft['letter'])}",
+        buttons=package_buttons(posting_id, draft.get("apply_url", "")),
+        html=True,
+    )
 
 
 def poll(poll_timeout: int = 30) -> None:
