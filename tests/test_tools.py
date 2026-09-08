@@ -78,15 +78,44 @@ def test_fetch_returns_empty_list_on_network_error(monkeypatch):
 
 # --- dedupe store ----------------------------------------------------------
 
-def test_dedupe_returns_nothing_the_second_time(tmp_path, postings):
+def test_judged_postings_do_not_come_back(tmp_path, postings):
     db = str(tmp_path / "test.db")
     assert len(store.filter_new(postings, db)) == 4
+    # Once each has a verdict, the same feed yields nothing.
+    for posting in postings:
+        store.set_status(posting["id"], "rejected", db_path=db)
+    assert store.filter_new(postings, db) == []
+
+
+def test_unjudged_postings_come_back(tmp_path, postings):
+    """A posting recorded but never judged must not be lost.
+
+    A crashed run, or a tool call truncated mid-flight, would otherwise bury a
+    good job forever behind the dedupe check.
+    """
+    db = str(tmp_path / "test.db")
+    store.filter_new(postings, db)
+    store.set_status(postings[0]["id"], "notified", db_path=db)
+    store.set_status(postings[1]["id"], "rejected", db_path=db)
+
+    # The two judged ones stay gone; the two still marked "new" return.
+    returning = {p["id"] for p in store.filter_new(postings, db)}
+    assert returning == {postings[2]["id"], postings[3]["id"]}
+
+
+def test_every_terminal_status_counts_as_handled(tmp_path, postings):
+    db = str(tmp_path / "test.db")
+    for status, posting in zip(("notified", "skipped", "applied_email", "bidding"), postings):
+        store.filter_new([posting], db)
+        store.set_status(posting["id"], status, db_path=db)
     assert store.filter_new(postings, db) == []
 
 
 def test_dedupe_returns_only_the_unseen_posting(tmp_path, postings):
     db = str(tmp_path / "test.db")
     store.filter_new(postings[:3], db)
+    for posting in postings[:3]:
+        store.set_status(posting["id"], "rejected", db_path=db)
     fresh = store.filter_new(postings, db)
     assert [p["id"] for p in fresh] == ["1000004"]
 
@@ -393,6 +422,8 @@ def test_status_lifecycle_and_no_resurfacing(tmp_path, postings):
     assert record["applied_at"] and record["cover_letter"] == "Dear team..."
 
     # Nothing already handled comes back on a later run.
+    for posting in postings[1:]:
+        store.set_status(posting["id"], "rejected", db_path=db)
     assert store.filter_new(postings, db) == []
 
 

@@ -30,7 +30,7 @@ from tools.notify import (
 )
 from tools.profile import load_profile, read_profile
 from tools.scoring import score, score_posting
-from tools.store import STATUS_NOTIFIED, filter_new, filter_new_postings, set_status
+from tools.store import STATUS_NOTIFIED, STATUS_REJECTED, filter_new, filter_new_postings, set_status
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ postings on behalf of one freelancer.
 Each run:
 1. Fetch the latest postings.
 2. Keep only postings not seen before.
-3. Load the freelancer's profile.
+3. Load the freelancer's profile once, for your own understanding.
 4. Score each new posting 0-100 for fit, with one line of reasoning.
 5. Send exactly one notification per qualifying posting, highest score first.
 6. Send the closing summary once, after the notifications.
@@ -200,6 +200,7 @@ def run_pipeline(tag: str = TAG, dry_run: bool = False, interactive: bool = Fals
             if result["score"] >= SCORE_THRESHOLD:
                 qualifying.append((result["score"], result["rationale"], posting))
             else:
+                set_status(posting["id"], STATUS_REJECTED, score=result["score"])
                 logger.info("Skipping %r (score %d)", posting["title"], result["score"])
         except Exception as exc:  # noqa: BLE001 - one bad posting must not kill the run
             logger.error("Posting %s failed: %s", posting.get("id"), exc)

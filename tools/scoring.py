@@ -11,6 +11,7 @@ from strands import tool
 
 from tools.fetch import hydrate
 from tools.llm import complete
+from tools.profile import bidding_profile
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +108,7 @@ def score(posting: dict[str, Any], profile: str) -> dict[str, Any]:
 
 
 @tool
-def score_posting(posting_json: str, profile: str) -> str:
+def score_posting(posting_json: str, profile: str = "") -> str:
     """Score one job posting 0-100 for fit against the freelancer's profile.
 
     Call this once per new posting. Returns a compact JSON string:
@@ -117,7 +118,9 @@ def score_posting(posting_json: str, profile: str) -> str:
     Args:
         posting_json: One posting as a JSON object string. Passing just
             {"id": "..."} is enough for a posting you already fetched.
-        profile: The freelancer's profile text from load_profile.
+        profile: LEAVE THIS EMPTY. BidWatch reads the profile from disk itself.
+            Do not paste the profile text here — it is long, and repeating it
+            in every call wastes the run's budget and can truncate the call.
     """
     try:
         posting = json.loads(posting_json)
@@ -126,4 +129,21 @@ def score_posting(posting_json: str, profile: str) -> str:
         return json.dumps({"score": 0, "rationale": "Posting could not be parsed."})
     if not isinstance(posting, dict):
         return json.dumps({"score": 0, "rationale": "Posting was not a JSON object."})
-    return json.dumps(score(hydrate(posting), profile), ensure_ascii=False)
+
+    posting = hydrate(posting)
+    if not posting.get("title"):
+        logger.error("score_posting could not resolve posting %r", posting.get("id"))
+        return json.dumps({"score": 0, "rationale": "That posting is not in this run's fetched postings."})
+
+    # The profile is read from disk, never taken from the model: a truncated
+    # paste would silently score a posting against half a profile.
+    result = score(posting, bidding_profile())
+
+    # Record the verdict. Postings below the threshold are marked rejected so
+    # they are not paid for twice; anything left unjudged comes back next run.
+    from config import SCORE_THRESHOLD
+    from tools.store import STATUS_REJECTED, set_status
+
+    if result["score"] < SCORE_THRESHOLD:
+        set_status(str(posting.get("id", "")), STATUS_REJECTED, score=result["score"])
+    return json.dumps(result, ensure_ascii=False)

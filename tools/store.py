@@ -25,11 +25,20 @@ from tools.fetch import hydrate
 logger = logging.getLogger(__name__)
 
 STATUS_NEW = "new"
+STATUS_REJECTED = "rejected"
 STATUS_NOTIFIED = "notified"
 STATUS_BIDDING = "bidding"
 STATUS_SKIPPED = "skipped"
 APPLIED_STATUSES = ("applied_email", "applied_ats", "applied_manual")
-VALID_STATUSES = (STATUS_NEW, STATUS_NOTIFIED, STATUS_BIDDING, STATUS_SKIPPED, *APPLIED_STATUSES)
+VALID_STATUSES = (
+    STATUS_NEW, STATUS_REJECTED, STATUS_NOTIFIED, STATUS_BIDDING, STATUS_SKIPPED, *APPLIED_STATUSES
+)
+
+#: A posting is "handled" once it has been judged, one way or the other. Only
+#: handled postings are withheld from later runs: a posting recorded but never
+#: judged — a crashed run, a truncated tool call — must come back, or a good
+#: job is lost forever to a transient failure.
+HANDLED_STATUSES = (STATUS_REJECTED, STATUS_NOTIFIED, STATUS_BIDDING, STATUS_SKIPPED, *APPLIED_STATUSES)
 
 
 def _now() -> str:
@@ -94,12 +103,17 @@ def filter_new(postings: list[dict[str, Any]], db_path: str = DB_PATH) -> list[d
     fresh: list[dict[str, Any]] = []
     try:
         with conn:
-            known = {row["id"] for row in conn.execute("SELECT id FROM seen_postings")}
+            placeholders = ", ".join("?" * len(HANDLED_STATUSES))
+            handled = {
+                row["id"] for row in conn.execute(
+                    f"SELECT id FROM seen_postings WHERE status IN ({placeholders})", HANDLED_STATUSES
+                )
+            }
             for posting in postings:
                 pid = str(posting.get("id", "")).strip()
-                if not pid or pid in known:
+                if not pid or pid in handled:
                     continue
-                known.add(pid)
+                handled.add(pid)
                 fresh.append(posting)
                 conn.execute(
                     "INSERT OR IGNORE INTO seen_postings"
@@ -117,7 +131,7 @@ def filter_new(postings: list[dict[str, Any]], db_path: str = DB_PATH) -> list[d
     finally:
         conn.close()
 
-    logger.info("%d of %d postings are new", len(fresh), len(postings))
+    logger.info("%d of %d postings still need judging", len(fresh), len(postings))
     return fresh
 
 
