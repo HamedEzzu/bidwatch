@@ -187,12 +187,15 @@ sequence — are in [docs/architecture.md](docs/architecture.md).
 | Tool | Signature | What it does |
 |---|---|---|
 | `fetch_job_postings` | `(tag: str = "dev", limit: int = 20) -> list[dict]` | Pulls the newest listings from Remote OK, skips the legal-notice element, strips HTML, truncates long descriptions, normalizes each posting. Returns `[]` on any network or HTTP error. |
-| `filter_new_postings` | `(postings: list[dict]) -> list[dict]` | Returns only postings whose ids aren't in the local SQLite store, then records them. Run twice, and the second run returns nothing. |
+| `filter_new_postings` | `(postings: list[dict]) -> list[dict]` | Returns only postings that still need judging, and records them. A posting with a verdict — rejected, notified, applied, skipped — never comes back; one recorded but never judged does, so a crashed run can't bury a good job. |
 | `load_profile` | `() -> str` | Reads `profile.md` fresh on every call, so you can edit it without restarting. Returns a clear error string if it's missing. |
-| `score_posting` | `(posting_json: str, profile: str) -> str` | Model reasoning: returns `{"score": 0-100, "rationale": "..."}`. Deal-breaker matches are forced below 20. Malformed model output is parsed defensively and defaults low. |
+| `score_posting` | `(posting_json: str, profile: str = "") -> str` | Model reasoning: returns `{"score": 0-100, "rationale": "..."}`. Deal-breaker matches are forced below 20; malformed model output is parsed defensively and defaults low. The profile argument is deliberately left empty — the tool reads `profile.md` from disk rather than having the model carry it. |
 | `send_notification` | `(posting_id: str, score: int, rationale: str) -> str` | Notifies about one job. The model passes only the id, score and rationale — BidWatch builds the message and attaches the buttons, so the format is guaranteed whatever the model writes. |
 | `send_run_summary` | `(new_count: int, notified_count: int) -> str` | The single closing line, sent only when something qualified. |
-| `generate_resume` | `(posting_json: str, profile: str) -> str` | Builds the job-tailored one-page PDF by selecting from the career database, and returns its path. Selection only — it cannot author résumé text. |
+
+The scanning agent has these six and no more. Résumé building and letter writing
+belong to the bid flow, which runs when you tap Bid — they are deliberately outside
+the autonomous loop, because they only ever run for a job you chose.
 
 ### Project layout
 

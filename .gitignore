@@ -19,3 +19,6 @@ generated_resumes/
 
 # Browser profile for assisted form filling (holds cookies)
 .browser_profile/
+
+# The dry-run store, so fixtures never touch the real one
+bidwatch-dryrun.db

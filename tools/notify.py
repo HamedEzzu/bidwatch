@@ -51,10 +51,16 @@ def format_salary(posting: dict[str, Any]) -> str | None:
     if not low and not high:
         return None
 
-    def money(value: int | None) -> str | None:
-        if not value:
+    def money(value: Any) -> str | None:
+        # Salary can arrive as a string from an older store row or a changed
+        # feed; a bad value must not break the whole notification.
+        try:
+            amount = int(float(value))
+        except (TypeError, ValueError):
             return None
-        return f"${value // 1000}k" if value >= 10_000 else f"${value:,}"
+        if amount <= 0:
+            return None
+        return f"${amount // 1000}k" if amount >= 10_000 else f"${amount:,}"
 
     low_s, high_s = money(low), money(high)
     if low_s and high_s:
@@ -289,9 +295,10 @@ def send(
     if repair:
         message = repair_message(message)
     if console_only or not telegram_configured():
-        logger.info("Telegram is not configured; printing notification to console.")
+        reason = "this is a dry run" if console_only else "Telegram is not configured"
+        logger.info("Printing notification to the console — %s.", reason)
         _print_console(message, buttons)
-        return "Notification printed to console (Telegram not configured)."
+        return f"Notification printed to console ({reason})."
 
     if send_message(message, buttons) is not None:
         logger.info("Notification sent to Telegram.")
@@ -319,7 +326,14 @@ def notify_job(
 _pending: list[tuple[int, str, dict[str, Any], str]] = []
 
 
+def is_queued(posting_id: str) -> bool:
+    return any(entry[3] == str(posting_id) for entry in _pending)
+
+
 def queue_job_notification(posting: dict[str, Any], score: int, rationale: str) -> None:
+    """Queue one job for delivery. Ignores a posting already queued."""
+    if is_queued(posting.get("id", "")):
+        return
     _pending.append(
         (int(score), format_job_message(posting, int(score), rationale), job_buttons(posting), str(posting.get("id", "")))
     )
@@ -362,6 +376,8 @@ def send_notification(posting_id: str, score: int, rationale: str) -> str:
     posting = hydrate({"id": str(posting_id)})
     if not posting.get("title"):
         return f"Posting {posting_id} is not in this run's fetched postings; nothing sent."
+    if is_queued(posting_id):
+        return f"{posting.get('title')} is already queued — scoring queues it for you."
     queue_job_notification(posting, int(score), rationale)
     return (
         f"Queued the notification for {posting.get('title')} ({int(score)}/100). "

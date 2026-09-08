@@ -56,18 +56,42 @@ def package_buttons(posting_id: str, apply_url: str = "") -> dict[str, Any]:
     return {"inline_keyboard": rows}
 
 
-def send_long(text: str, buttons: dict[str, Any] | None = None, html: bool = False) -> None:
-    """Send a message, splitting it if it exceeds Telegram's length limit."""
+def _split(text: str, limit: int) -> list[str]:
+    """Split on line breaks, falling back to a hard cut for one long line."""
     chunks: list[str] = []
     remaining = text
-    while len(remaining) > TELEGRAM_LIMIT:
-        split_at = remaining.rfind("\n", 0, TELEGRAM_LIMIT)
-        split_at = split_at if split_at > 0 else TELEGRAM_LIMIT
+    while len(remaining) > limit:
+        split_at = remaining.rfind("\n", 0, limit)
+        split_at = split_at if split_at > 0 else limit
         chunks.append(remaining[:split_at])
         remaining = remaining[split_at:].lstrip("\n")
     chunks.append(remaining)
+    return chunks
+
+
+def send_long(text: str, buttons: dict[str, Any] | None = None) -> None:
+    """Send a plain-text message, splitting it if it exceeds Telegram's limit."""
+    chunks = _split(text, TELEGRAM_LIMIT)
     for index, chunk in enumerate(chunks):
-        send_message(chunk, buttons if index == len(chunks) - 1 else None, html=html)
+        send_message(chunk, buttons if index == len(chunks) - 1 else None)
+
+
+def send_copy_block(heading: str, body: str, buttons: dict[str, Any] | None = None) -> None:
+    """Send text in copy blocks, splitting the BODY rather than the markup.
+
+    Splitting the finished HTML would cut a <pre> in half, and Telegram
+    rejects unbalanced markup — the message would vanish silently. So the body
+    is chunked first and each chunk gets its own complete block.
+    """
+    room = TELEGRAM_LIMIT - len(heading) - 64   # headroom for tags and escaping
+    chunks = _split(body, max(500, room))
+    for index, chunk in enumerate(chunks):
+        prefix = heading if index == 0 else f"{heading} (continued)"
+        send_message(
+            f"{prefix}\n{code_block(chunk)}",
+            buttons if index == len(chunks) - 1 else None,
+            html=True,
+        )
 
 
 def send_package(posting_id: str, draft: dict[str, Any]) -> None:
@@ -86,11 +110,11 @@ def send_package(posting_id: str, draft: dict[str, Any]) -> None:
 
     # The letter and field sheet go in code blocks: Telegram gives those a copy
     # button, which is the entire point of a package you paste into a form.
-    send_long(f"Cover letter:\n{code_block(draft['letter'])}", html=True)
-    send_message(
-        f"Application details:\n{code_block(draft['sheet'])}",
+    send_copy_block("Cover letter:", draft["letter"])
+    send_copy_block(
+        "Application details:",
+        draft["sheet"],
         buttons=package_buttons(posting_id, draft.get("apply_url", "")),
-        html=True,
     )
 
 
@@ -168,10 +192,10 @@ def handle_message(message: dict[str, Any]) -> None:
     if "error" in draft:
         send_message(draft["error"])
         return
-    send_long(
-        f"Revised cover letter:\n{code_block(draft['letter'])}",
+    send_copy_block(
+        "Revised cover letter:",
+        draft["letter"],
         buttons=package_buttons(posting_id, draft.get("apply_url", "")),
-        html=True,
     )
 
 

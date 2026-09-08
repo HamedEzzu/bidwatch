@@ -697,3 +697,113 @@ def test_no_module_can_submit_an_application():
             if term in text:
                 offenders.append(f"{path.name}: {term}")
     assert offenders == [], offenders
+
+
+# --- regressions -----------------------------------------------------------
+
+def test_a_bad_salary_value_does_not_break_the_notification():
+    """Salary can arrive as a string from an older store row or a changed feed."""
+    assert notify.format_salary({"salary_min": "abc", "salary_max": None}) is None
+    assert notify.format_salary({"salary_min": "40000", "salary_max": "70000"}) == "$40k–$70k"
+    assert notify.format_salary({"salary_min": -5, "salary_max": 0}) is None
+    message = notify.format_job_message({"salary_min": "oops"}, 70, "fits")
+    assert message.startswith("[70/100]") and "Salary" not in message
+
+
+def test_marking_an_unrecorded_posting_actually_persists(tmp_path):
+    """set_status used to report success while updating nothing."""
+    db = str(tmp_path / "ghost.db")
+    assert store.set_status("ghost-1", "applied", db_path=db) is True
+    record = store.get_posting_record("ghost-1", db)
+    assert record is not None and record["status"] == "applied"
+    # And it is withheld from later runs, which was the point.
+    assert store.filter_new([{"id": "ghost-1", "title": "x"}], db) == []
+
+
+def test_the_posting_cache_is_bounded():
+    """The scheduler runs for days; an unbounded cache would grow all week."""
+    from tools.fetch import MAX_CACHED_POSTINGS, _POSTING_CACHE, hydrate, remember
+
+    remember([{"id": f"cache-{i}", "title": f"t{i}", "description": "x"} for i in range(MAX_CACHED_POSTINGS + 50)])
+    assert len(_POSTING_CACHE) <= MAX_CACHED_POSTINGS
+    # The newest survive; the oldest are evicted (and still live in the store).
+    assert hydrate({"id": f"cache-{MAX_CACHED_POSTINGS + 49}"})["title"].startswith("t")
+    assert hydrate({"id": "cache-0"}) == {"id": "cache-0"}
+
+
+def test_a_long_letter_is_split_into_valid_copy_blocks():
+    """Splitting finished HTML cut <pre> in half, and Telegram dropped it."""
+    import bot
+
+    sent: list[tuple[str, bool]] = []
+    original = bot.send_message
+    bot.send_message = lambda text, buttons=None, html=False: sent.append((text, html))
+    try:
+        bot.send_copy_block("Cover letter:", "word " * 1500)
+    finally:
+        bot.send_message = original
+
+    assert len(sent) > 1, "a very long letter should be split"
+    for text, html in sent:
+        assert html is True
+        assert text.count("<pre>") == 1 and text.count("</pre>") == 1
+        assert len(text) <= 4096, "each chunk must fit Telegram's limit"
+
+
+def test_a_qualifying_score_is_queued_by_code_not_by_the_model(monkeypatch, tmp_path, postings):
+    """A live run scored a posting 68 against a threshold of 65 and then
+    concluded nothing qualified. The threshold is not a judgement call."""
+    import json as _json
+
+    from tools import notify as notify_mod
+    from tools import scoring
+
+    notify_mod._pending.clear()
+    monkeypatch.setattr(store, "DB_PATH", str(tmp_path / "t.db"))
+    fetch.remember(postings)
+    monkeypatch.setattr(scoring, "complete", lambda s, u: '{"score": 68, "rationale": "close fit"}')
+
+    result = _json.loads(scoring.score_posting(_json.dumps({"id": postings[0]["id"]})))
+    assert result["score"] == 68
+    assert notify_mod.pending_count() == 1, "a qualifying posting must be queued regardless"
+    notify_mod._pending.clear()
+
+
+def test_a_low_score_is_recorded_rejected_and_not_queued(monkeypatch, tmp_path, postings):
+    import json as _json
+
+    from tools import notify as notify_mod
+    from tools import scoring
+
+    notify_mod._pending.clear()
+    db = str(tmp_path / "t.db")
+    monkeypatch.setattr(store, "DB_PATH", db)
+    fetch.remember(postings)
+    monkeypatch.setattr(scoring, "complete", lambda s, u: '{"score": 20, "rationale": "poor fit"}')
+
+    scoring.score_posting(_json.dumps({"id": postings[0]["id"]}))
+    assert notify_mod.pending_count() == 0
+    assert store.get_status(postings[0]["id"], db) == "rejected"
+
+
+def test_a_posting_is_never_queued_twice(postings):
+    from tools import notify as notify_mod
+
+    notify_mod._pending.clear()
+    notify_mod.queue_job_notification(postings[0], 80, "first")
+    notify_mod.queue_job_notification(postings[0], 80, "again")
+    assert notify_mod.pending_count() == 1
+    notify_mod._pending.clear()
+
+
+def test_the_store_path_can_be_redirected(tmp_path, monkeypatch):
+    """DB_PATH used to be frozen into default arguments, so a redirect was
+    ignored and writes landed in the real store — including from tests."""
+    import sqlite3
+
+    redirected = str(tmp_path / "redirected.db")
+    monkeypatch.setattr(store, "DB_PATH", redirected)
+    store.set_status("probe-1", "notified")
+
+    rows = sqlite3.connect(redirected).execute("SELECT id, status FROM seen_postings").fetchall()
+    assert rows == [("probe-1", "notified")]

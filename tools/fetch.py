@@ -12,6 +12,7 @@ from __future__ import annotations
 import html
 import logging
 import re
+from collections import OrderedDict
 from typing import Any
 
 import requests
@@ -24,7 +25,22 @@ logger = logging.getLogger(__name__)
 #: Postings fetched during this process, keyed by id. Lets downstream tools be
 #: handed just {"id": ...} instead of the model re-serializing every full
 #: posting back through the context window.
-_POSTING_CACHE: dict[str, dict[str, Any]] = {}
+#:
+#: Bounded, because the scheduler runs for days: each cycle adds ~60 postings
+#: with 2KB descriptions, and an unbounded dict would grow all week. Anything
+#: evicted is still recoverable from the store, which persists the full posting.
+_POSTING_CACHE: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
+MAX_CACHED_POSTINGS = 500
+
+
+def _remember_one(posting: dict[str, Any]) -> None:
+    posting_id = str(posting.get("id", ""))
+    if not posting_id:
+        return
+    _POSTING_CACHE.pop(posting_id, None)
+    _POSTING_CACHE[posting_id] = posting
+    while len(_POSTING_CACHE) > MAX_CACHED_POSTINGS:
+        _POSTING_CACHE.popitem(last=False)
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"[ \t\r\f\v]+")
@@ -132,7 +148,8 @@ def fetch_job_postings(tag: str = "dev", limit: int = 20) -> list[dict]:
         if len(postings) >= max(1, limit):
             break
 
-    _POSTING_CACHE.update({p["id"]: p for p in postings})
+    for posting in postings:
+        _remember_one(posting)
     logger.info("Fetched %d postings for tag=%r", len(postings), tag)
     return postings
 
@@ -153,4 +170,5 @@ def hydrate(posting: dict[str, Any]) -> dict[str, Any]:
 
 def remember(postings: list[dict[str, Any]]) -> None:
     """Add postings (e.g. fixtures) to the in-process cache."""
-    _POSTING_CACHE.update({p["id"]: p for p in postings if p.get("id")})
+    for posting in postings:
+        _remember_one(posting)

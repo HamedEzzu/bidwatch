@@ -10,6 +10,7 @@ from strands import Agent
 from strands.models import BedrockModel
 
 from config import (
+    DRY_RUN_DB_PATH,
     FIXTURE_PATH,
     MAX_POSTINGS_PER_RUN,
     MODEL_ID,
@@ -28,7 +29,7 @@ from tools.notify import (
     send_run_summary,
     telegram_configured,
 )
-from tools.profile import load_profile, read_profile
+from tools.profile import bidding_profile, load_profile
 from tools.scoring import score, score_posting
 from tools.store import STATUS_NOTIFIED, STATUS_REJECTED, filter_new, filter_new_postings, set_status
 
@@ -47,7 +48,7 @@ Each run:
 
 Hard rules:
 - NEVER claim skills or experience not present in the profile.
-- NEVER submit or send a proposal to a client. You draft only.
+- NEVER contact an employer. You notify the freelancer; they apply themselves.
 - If nothing qualifies, send nothing and end the run quietly.
 - Be conservative: a missed marginal job costs less than a wasted bid
   or an inaccurate claim.
@@ -58,9 +59,9 @@ Operating limits for this run:
 - The score threshold is {SCORE_THRESHOLD}. Notify for every posting scoring at
   or above it — not just the best one — highest score first.
 - Score at most {MAX_POSTINGS_PER_RUN} postings. Stop after that, even if more are new.
-- Each notification message must contain: job title, company, the direct
-  Remote OK job link, the score, the rationale, the draft proposal, and the
-  line "Source: Remote OK".
+- Do not write notification text yourself. Call send_notification with the
+  posting id, the score and your one-line rationale; BidWatch builds the
+  message and attaches the buttons.
 - The feed mixes software roles with unrelated listings (retail, logistics,
   hospitality). When choosing which postings to score, pick the ones whose
   title and tags look like software development work — do not simply take the
@@ -174,13 +175,16 @@ def run_pipeline(tag: str = TAG, dry_run: bool = False, interactive: bool = Fals
     postings = load_fixture_postings() if dry_run else fetch_job_postings(tag=tag, limit=MAX_POSTINGS_PER_RUN * 4)
     stats["fetched"] = len(postings)
 
-    fresh = filter_new(postings)
+    # A dry run keeps its own store, so fixture jobs never pollute the real one.
+    fresh = filter_new(postings, DRY_RUN_DB_PATH) if dry_run else filter_new(postings)
     stats["new"] = len(fresh)
     if not fresh:
         logger.info("No new postings this cycle; ending quietly.")
         return stats
 
-    profile = read_profile()
+    # The bidding half only: the résumé material dilutes a scoring prompt and
+    # costs five times the tokens. Matches what the score_posting tool uses.
+    profile = bidding_profile()
     batch = prioritize(fresh)[:MAX_POSTINGS_PER_RUN]
     qualifying: list[tuple[int, str, dict[str, Any]]] = []
 
@@ -199,7 +203,7 @@ def run_pipeline(tag: str = TAG, dry_run: bool = False, interactive: bool = Fals
             stats["scored"] += 1
             if result["score"] >= SCORE_THRESHOLD:
                 qualifying.append((result["score"], result["rationale"], posting))
-            else:
+            elif not dry_run:
                 set_status(posting["id"], STATUS_REJECTED, score=result["score"])
                 logger.info("Skipping %r (score %d)", posting["title"], result["score"])
         except Exception as exc:  # noqa: BLE001 - one bad posting must not kill the run
@@ -211,9 +215,13 @@ def run_pipeline(tag: str = TAG, dry_run: bool = False, interactive: bool = Fals
     for score_value, rationale, posting in qualifying:
         try:
             notify_job(posting, score_value, rationale, console_only=dry_run)
-            set_status(posting["id"], STATUS_NOTIFIED, score=score_value)
+            if not dry_run:
+                set_status(posting["id"], STATUS_NOTIFIED, score=score_value)
             stats["notified"] += 1
-            if interactive and not telegram_configured():
+            if interactive:
+                # Explicitly asked for, so it runs whether or not Telegram is
+                # set up: the flag would otherwise do nothing for anyone who
+                # has a bot configured, which is everyone using it normally.
                 import console
 
                 console.handle_job(posting)

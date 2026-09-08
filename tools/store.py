@@ -50,9 +50,19 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _connect(db_path: str = DB_PATH) -> sqlite3.Connection:
+def _resolve(db_path: str | None) -> str:
+    """Which database to use, decided per call.
+
+    Binding DB_PATH as a default argument would freeze it at import time, so a
+    test (or a dry run) could not point the store somewhere else — and would
+    silently write to the real store instead.
+    """
+    return db_path or DB_PATH
+
+
+def _connect(db_path: str | None = None) -> sqlite3.Connection:
     """Open the store, creating or migrating the schema as needed."""
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(_resolve(db_path))
     conn.row_factory = sqlite3.Row
     conn.execute(
         "CREATE TABLE IF NOT EXISTS seen_postings ("
@@ -87,7 +97,7 @@ def _connect(db_path: str = DB_PATH) -> sqlite3.Connection:
 
 # --- dedupe ----------------------------------------------------------------
 
-def filter_new(postings: list[dict[str, Any]], db_path: str = DB_PATH) -> list[dict[str, Any]]:
+def filter_new(postings: list[dict[str, Any]], db_path: str | None = None) -> list[dict[str, Any]]:
     """Plain-Python core of `filter_new_postings` (also used by tests)."""
     if not postings:
         return []
@@ -134,7 +144,7 @@ def filter_new(postings: list[dict[str, Any]], db_path: str = DB_PATH) -> list[d
 
 # --- lifecycle -------------------------------------------------------------
 
-def get_status(posting_id: str, db_path: str = DB_PATH) -> str | None:
+def get_status(posting_id: str, db_path: str | None = None) -> str | None:
     """Current status of a posting, or None if it was never seen."""
     try:
         conn = _connect(db_path)
@@ -159,7 +169,7 @@ def set_status(
     score: int | None = None,
     cover_letter: str | None = None,
     resume_path: str | None = None,
-    db_path: str = DB_PATH,
+    db_path: str | None = None,
 ) -> bool:
     """Move a posting to `status`, stamping the matching timestamp."""
     if status not in VALID_STATUSES:
@@ -187,7 +197,21 @@ def set_status(
     try:
         conn = _connect(db_path)
         with conn:
-            conn.execute(f"UPDATE seen_postings SET {', '.join(fields)} WHERE id = ?", values)
+            cursor = conn.execute(
+                f"UPDATE seen_postings SET {', '.join(fields)} WHERE id = ?", values
+            )
+            if cursor.rowcount == 0:
+                # The posting was never recorded — a bot restarted against a
+                # fresh database, say. Create the row rather than reporting a
+                # success that changed nothing and letting the job resurface.
+                conn.execute(
+                    "INSERT OR IGNORE INTO seen_postings (id, status, seen_at) VALUES (?, ?, ?)",
+                    (str(posting_id), status, _now()),
+                )
+                conn.execute(
+                    f"UPDATE seen_postings SET {', '.join(fields)} WHERE id = ?", values
+                )
+                logger.info("Posting %s was not in the store; recorded it as %s", posting_id, status)
         logger.info("Posting %s -> %s", posting_id, status)
         return True
     except sqlite3.Error as exc:
@@ -200,7 +224,7 @@ def set_status(
             pass
 
 
-def get_posting_record(posting_id: str, db_path: str = DB_PATH) -> dict[str, Any] | None:
+def get_posting_record(posting_id: str, db_path: str | None = None) -> dict[str, Any] | None:
     """Everything the store knows about one posting."""
     try:
         conn = _connect(db_path)

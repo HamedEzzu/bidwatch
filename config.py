@@ -35,6 +35,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROFILE_PATH = os.path.join(BASE_DIR, "profile.md")
 APPLICANT_PATH = os.path.join(BASE_DIR, "applicant.md")
 DB_PATH = os.path.join(BASE_DIR, "bidwatch.db")
+# A dry run must not put fixture jobs into the real store, or the fake
+# postings would be "seen" and a later real run would behave oddly.
+DRY_RUN_DB_PATH = os.path.join(BASE_DIR, "bidwatch-dryrun.db")
 FIXTURE_PATH = os.path.join(BASE_DIR, "fixtures", "sample_postings.json")
 
 

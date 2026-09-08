@@ -139,11 +139,20 @@ def score_posting(posting_json: str, profile: str = "") -> str:
     # paste would silently score a posting against half a profile.
     result = score(posting, bidding_profile())
 
-    # Record the verdict. Postings below the threshold are marked rejected so
-    # they are not paid for twice; anything left unjudged comes back next run.
+    # Record the verdict and act on it here, in code. The threshold is not a
+    # judgement call: a run once scored a posting 68 against a threshold of 65
+    # and then concluded nothing qualified. Below the line is marked rejected
+    # so it is not paid for twice; at or above it is queued for delivery, so a
+    # qualifying job reaches the freelancer whatever the model decides next.
     from config import SCORE_THRESHOLD
+    from tools.notify import queue_job_notification
     from tools.store import STATUS_REJECTED, set_status
 
+    posting_id = str(posting.get("id", ""))
     if result["score"] < SCORE_THRESHOLD:
-        set_status(str(posting.get("id", "")), STATUS_REJECTED, score=result["score"])
+        set_status(posting_id, STATUS_REJECTED, score=result["score"])
+        result["action"] = "below threshold; recorded as rejected"
+    else:
+        queue_job_notification(posting, result["score"], result["rationale"])
+        result["action"] = "queued for notification; call send_run_summary when finished"
     return json.dumps(result, ensure_ascii=False)
