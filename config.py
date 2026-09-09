@@ -16,7 +16,7 @@ REGION = os.getenv("AWS_REGION", "eu-north-1")
 # --- Job source ------------------------------------------------------------
 JOB_SOURCE_URL = os.getenv("JOB_SOURCE_URL", "https://remoteok.com/api")
 TAG = os.getenv("BIDWATCH_TAG", "backend")
-USER_AGENT = "BidWatch/1.0 (freelance job scout; +https://github.com/HamedEzzu/bidwatch)"
+USER_AGENT = "BidWatch/1.0 (remote job scout; +https://github.com/HamedEzzu/bidwatch)"
 
 # --- Behaviour -------------------------------------------------------------
 SCORE_THRESHOLD = int(os.getenv("SCORE_THRESHOLD", "65"))

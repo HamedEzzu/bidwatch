@@ -46,7 +46,7 @@ send mail, post a form, or drive a browser.
 ```mermaid
 flowchart TD
     T[Bid tapped] --> R[Build the job-tailored résumé]
-    T --> L[Write the cover letter in the freelancer's voice]
+    T --> L[Write the cover letter in the job seeker's voice]
     T --> F[Field sheet from applicant.md]
 
     R --> P[Application package]
@@ -112,7 +112,7 @@ sequenceDiagram
     participant ROK as Remote OK API
     participant DB as bidwatch.db
     participant M as Bedrock model
-    participant U as Freelancer
+    participant U as job seeker
 
     Sch->>Ag: run one cycle
     Ag->>ROK: fetch_job_postings(tag, limit)
@@ -145,7 +145,7 @@ sequenceDiagram
 | Dedupe | `tools/store.py` | SQLite store of seen posting ids |
 | Profile | `tools/profile.py` | Fresh read of `profile.md` on every call |
 | Scoring | `tools/scoring.py` | 0–100 fit score + rationale, defensive JSON parsing |
-| Drafting | `tools/drafting.py` | Proposal under 150 words in the freelancer's voice |
+| Drafting | `tools/drafting.py` | Proposal under 150 words in the job seeker's voice |
 | Delivery | `tools/notify.py` | Telegram, with console fallback |
 | Model access | `tools/llm.py` | Shared Bedrock client + token-usage accounting |
 

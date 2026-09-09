@@ -358,7 +358,7 @@ def flush_notifications(console_only: bool = False) -> int:
 
 @tool
 def send_notification(posting_id: str, score: int, rationale: str) -> str:
-    """Notify the freelancer about ONE qualifying job, by posting id.
+    """Notify the job seeker about ONE qualifying job, by posting id.
 
     Call this once per posting that scored at or above the threshold, highest
     score first, and never twice for the same posting. Pass only the id, the
@@ -366,7 +366,7 @@ def send_notification(posting_id: str, score: int, rationale: str) -> str:
     (title, company, salary, the direct Remote OK link, the attribution) and
     attaches the Bid / Open / Skip buttons, so do not write the message text.
 
-    This notifies the freelancer only. It never contacts an employer.
+    This notifies the job seeker only. It never contacts an employer.
 
     Args:
         posting_id: The id of the posting to notify about.

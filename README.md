@@ -1,4 +1,4 @@
-# BidWatch — AI Freelance Job Scout
+# BidWatch — AI Remote Job Scout
 
 **BidWatch watches job boards so you don't have to.** It fetches new remote job
 postings, scores each one against your own skill profile, drafts a tailored proposal
@@ -12,7 +12,7 @@ for the AWS "Agents for Humans" hackathon (Professional Agents track).
 
 ## The problem
 
-Freelancers lose hours every week to the same loop: refresh the board, scan the new
+job seekers lose hours every week to the same loop: refresh the board, scan the new
 postings, mentally discard the ones that don't fit (wrong stack, budget too low, a
 deal-breaker in the fine print), then write a proposal from scratch for the two that
 survive. The scanning is mechanical. The judgement at the end is not.
@@ -372,7 +372,7 @@ INFO bidwatch.scheduler: Approx. token usage — calls=6 input=7227 output=412
 INFO bidwatch.scheduler: Cycle end — 52.2s elapsed
 ```
 
-Note what the draft does *not* do: it states plainly that the freelancer does not meet
+Note what the draft does *not* do: it states plainly that the job seeker does not meet
 the senior requirement, rather than claiming experience the profile doesn't contain.
 Running the same command again immediately afterwards reports `0 of 20 postings are
 new`, makes zero model calls, and sends nothing.
@@ -454,7 +454,7 @@ it's diffable in git alongside the code that uses it.
 **All source knowledge lives in one file.** Every Remote OK peculiarity — the
 attribution object in position zero, HTML descriptions, sparse salaries — is confined
 to `tools/fetch.py`, which emits a normalized posting dict. Adding Upwork or
-Freelancer means writing one new fetcher against that shape; no other file changes.
+job seeker means writing one new fetcher against that shape; no other file changes.
 
 **Two execution paths.** `--mode agent` (default) lets the model drive the Strands
 tool loop — that's the agentic behaviour the project is about. `--mode pipeline` runs
@@ -474,8 +474,8 @@ permanent, salaried, full-time role, and the API does not expose contract type. 
 early version penalised "full-time" and "senior", which made BidWatch silent by
 construction — it rejected every posting the board actually carries. Those signals are
 now a mild penalty at most; the score is dominated by stack overlap, and deal-breakers
-(on-site, page-builder work, a language the freelancer doesn't speak) remain fatal.
-The freelancer decides whether a senior title is worth their bid; BidWatch judges the
+(on-site, page-builder work, a language the job seeker doesn't speak) remain fatal.
+The job seeker decides whether a senior title is worth their bid; BidWatch judges the
 work.
 
 **The outbound message is repaired, not trusted.** When the model composes a
@@ -484,7 +484,7 @@ Both are obligations under the Remote OK API terms, so `send_notification` rewri
 Remote OK link from the posting BidWatch actually fetched and appends the attribution if
 it is missing, before anything is sent.
 
-**Conservative scoring by default.** A missed marginal job costs a freelancer far
+**Conservative scoring by default.** A missed marginal job costs a job seeker far
 less than a wasted bid or, worse, a proposal claiming experience they don't have. So
 unparseable model output scores 0 rather than guessing, deal-breaker matches are
 forced below 20, and the drafting prompt requires stating plainly what is *not*
@@ -519,12 +519,12 @@ usage is logged after every run.
 
 ## Future work
 
-- **More sources.** Upwork and Freelancer RSS/API adapters behind the existing
+- **More sources.** Upwork and job seeker RSS/API adapters behind the existing
   fetcher interface; a merged, cross-source dedupe key.
 - **Live deployment.** Lambda on an EventBridge schedule, with the dedupe store moved
   to DynamoDB so it survives a stateless runtime. The code is already structured for
   it: one cycle is a single function call.
-- **Feedback loop.** Let the freelancer reply "bid" or "skip" to a Telegram
+- **Feedback loop.** Let the job seeker reply "bid" or "skip" to a Telegram
   notification and feed those decisions back as few-shot examples, so scoring learns
   the user's real preferences instead of only what they wrote down.
 - **Proposal history.** Keep sent drafts and outcomes to spot which openings actually

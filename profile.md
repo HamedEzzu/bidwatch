@@ -1,4 +1,4 @@
-# Freelancer Career Database
+# job seeker Career Database
 
 Everything BidWatch knows about you. Two jobs:
 

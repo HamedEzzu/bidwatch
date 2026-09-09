@@ -1,7 +1,7 @@
 """The bid flow: prepare a complete application package for one posting.
 
 BidWatch prepares; the person applies. Tapping Bid builds everything an
-application needs — a job-tailored résumé, a cover letter in the freelancer's
+application needs — a job-tailored résumé, a cover letter in the job seeker's
 voice, and a copy-paste field sheet — and hands it over. Nothing is ever sent
 to an employer from here, because nothing here can send.
 

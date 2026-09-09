@@ -58,7 +58,7 @@ def run_cycle(mode: str, tag: str, dry_run: bool, interactive: bool = False) -> 
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="BidWatch — AI freelance job scout.")
+    parser = argparse.ArgumentParser(description="BidWatch — AI Remote job scout.")
     parser.add_argument("--once", action="store_true", help="Run a single cycle and exit.")
     parser.add_argument(
         "--dry-run",

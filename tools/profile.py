@@ -1,4 +1,4 @@
-"""Loads the freelancer profile that everything else is judged against."""
+"""Loads the job seeker profile that everything else is judged against."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 MISSING_PROFILE_MESSAGE = (
     "ERROR: profile.md was not found. Create it in the project root with the "
-    "freelancer's skills, rates, deal-breakers and proposal voice before scoring."
+    "job seeker's skills, rates, deal-breakers and proposal voice before scoring."
 )
 
 
@@ -69,9 +69,9 @@ def bidding_profile(path: str = PROFILE_PATH) -> str:
 
 @tool
 def load_profile() -> str:
-    """Load the freelancer's profile: skills, rates, deal-breakers and voice.
+    """Load the job seeker's profile: skills, rates, deal-breakers and voice.
 
     Call this once per run before scoring. The file is read fresh every time,
-    so the freelancer can edit profile.md without restarting the agent.
+    so the job seeker can edit profile.md without restarting the agent.
     """
     return read_profile()

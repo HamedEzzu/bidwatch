@@ -1,4 +1,4 @@
-"""Scores one posting against the freelancer profile."""
+"""Scores one posting against the job seeker profile."""
 
 from __future__ import annotations
 
@@ -15,10 +15,10 @@ from tools.profile import bidding_profile
 
 logger = logging.getLogger(__name__)
 
-SCORING_SYSTEM_PROMPT = """You score remote job postings for one freelancer.
+SCORING_SYSTEM_PROMPT = """You score remote job postings for one job seeker.
 
 The score answers ONE question: how well does this work match what the
-freelancer can actually do, at a rate they would accept?
+job seeker can actually do, at a rate they would accept?
 
 Weigh, in order:
 1. Stack overlap with the profile's "Skills" and "Projects" sections — this
@@ -36,10 +36,10 @@ Calibration, important:
   salaried, full-time roles and does not expose contract type. So "full-time",
   "permanent" or "salaried" is NOT a negative and must not reduce the score.
 - A senior title or a "5+ years experience" line is a MILD penalty only (a few
-  points). The freelancer decides for themselves whether to apply; your job is
+  points). The job seeker decides for themselves whether to apply; your job is
   to judge the work, not to screen them out of it.
 - Judge only what the posting says. Do not infer a rejection from the
-  freelancer being a student or part-time.
+  job seeker being a student or part-time.
 
 Guide: 80-100 the stack is squarely in the strong skills; 65-79 solid overlap
 with some gaps; 40-64 partial overlap or a materially different stack; 20-39
@@ -98,7 +98,7 @@ def score(posting: dict[str, Any], profile: str) -> dict[str, Any]:
         "description": posting.get("description"),
     }
     user_prompt = (
-        f"FREELANCER PROFILE:\n{profile}\n\n"
+        f"JOB SEEKER PROFILE:\n{profile}\n\n"
         f"JOB POSTING:\n{json.dumps(payload, ensure_ascii=False)}\n\n"
         "Score this posting."
     )
@@ -109,7 +109,7 @@ def score(posting: dict[str, Any], profile: str) -> dict[str, Any]:
 
 @tool
 def score_posting(posting_json: str, profile: str = "") -> str:
-    """Score one job posting 0-100 for fit against the freelancer's profile.
+    """Score one job posting 0-100 for fit against the job seeker's profile.
 
     Call this once per new posting. Returns a compact JSON string:
     {"score": 0-100, "rationale": "one sentence"}. A posting that matches a
@@ -143,7 +143,7 @@ def score_posting(posting_json: str, profile: str = "") -> str:
     # judgement call: a run once scored a posting 68 against a threshold of 65
     # and then concluded nothing qualified. Below the line is marked rejected
     # so it is not paid for twice; at or above it is queued for delivery, so a
-    # qualifying job reaches the freelancer whatever the model decides next.
+    # qualifying job reaches the job seeker whatever the model decides next.
     from config import SCORE_THRESHOLD
     from tools.notify import queue_job_notification
     from tools.store import STATUS_REJECTED, set_status
