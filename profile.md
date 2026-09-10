@@ -137,6 +137,7 @@ WinForms with SQL Server, some WPF {tags: desktop, winforms, wpf, csharp, dotnet
 - Projects under $50
 - Anything requiring on-site presence
 - Roles requiring a language other than English or Arabic
+- Any posting requiring payment, purchase, or fee to apply, interview, or begin work
 
 ## Context
 - Computer Engineering student, University of Tripoli (Libya), graduating 2027
